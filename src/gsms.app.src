@@ -1,0 +1,11 @@
+{application, gsms,
+ [
+  {description, "ETSI 03.40 Sender & Reciver"},
+  {vsn, git},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {env, []}
+ ]}.
