@@ -9,44 +9,58 @@
 -ifndef(__GSMS_HRL__).
 -define(__GSMS_HRL__, true).
 
--define(MTI_SMS_SUBMIT, 2#01).
+-record(gsms_filter,
+	{
+	  id,
+	  props = []
+	}).
 
--record(gsms_submit_pdu, {
-	  smsc,  %% smsc information
-	  rp,    %% :1 reply path exists
-	  udhi,  %% :1 user data header exists
-	  srr,   %% :1 status report request
-	  vpf,   %% :2 validity periad format 0..3
-	  rd,    %% :1 reject duplicates
-	  mti,   %% :2 message type indicator 2#01 = SUBIT
-	  mref,  %% :8 byte
-	  recipient, %% Len:8,Type:8,Addr:Len
-	  pid,   %% protocol identifire
-	  dcs,   %% data coding scheme
-	  vp,    %% :8 validity peridod
-	  vpformat, 
-	  udl,
-	  ud
-	 }).
+-record(gsms_addr,
+	{
+	  type = unknown,
+	  addr = ""
+	}).
+
+-define(VP_RELATIVE, (60*60*24)).   %% 1 day
+-define(DEFAULT_DCS, [message,uncompressed,default,alert]).
+-define(DEFAULT_PID, 0).
 
 -define(MTI_SMS_DELIVER, 2#00).
 
 -record(gsms_deliver_pdu, {
-	  smsc,  %% smsc information
-	  rp,    %% :1 reply path exists
-	  udhi,  %% :1 user data header exists
-	  sri,   %% :1 status report indication
-	  res1,  %% 0:1
-	  res2,  %% 0:1
-	  mms,   %% :1 more messages to send
-	  mti,   %% :2 message type indicator 2#00 = DELIVER
-	  message_ref,  %% :8 byte
-	  sender, %% Len:8,Type:8,Addr:Len
-	  pid,    %% protocol identifire
-	  dcs,    %% data coding scheme
-	  scts,     %% :8  (tp_vpf)
-	  udl,   %% length in septets/octets (depend on dcs)
+	  smsc,             %% :: #gsms_addr{} smsc information
+	  rp=false,         %% :1 reply path exists
+	  udhi=false,       %% :1 user data header exists
+	  sri=false,        %% :1 status report indication
+	  res1=0,           %% 0:1
+	  res2=0,           %% 0:1
+	  mms=false,        %% :1 more messages to send
+	  addr,             %% :: #gsms_addr{}
+	  pid=?DEFAULT_PID, %% protocol identifire
+	  dcs=?DEFAULT_DCS, %% data coding scheme
+	  scts,             %% :7/binary
+	  udh=[],           %% user data header
+	  udl,              %% length in septets/octets (depend on dcs)
 	  ud 
+	 }).
+
+-define(MTI_SMS_SUBMIT, 2#01).
+
+-record(gsms_submit_pdu, {
+	  smsc,             %% ::gsms_addr{}  smsc information
+	  rp=false,         %% :1 reply path exists
+	  udhi=false,       %% :1 user data header exists
+	  srr=false,        %% :1 status report request
+	  vpf=relative,     %% :2 validity periad format 0..3
+	  rd=true,          %% :1 reject duplicates
+	  mref=0,           %% :8
+	  addr,             %% ::gsms_addr{} 
+	  pid=?DEFAULT_PID, %% protocol identifire
+	  dcs=?DEFAULT_DCS, %% data coding scheme
+	  vp=?VP_RELATIVE,  %% vary depend on vpf
+	  udh=[],           %% user data header
+	  udl,
+	  ud
 	 }).
 
 

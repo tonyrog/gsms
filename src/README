@@ -1,0 +1,99 @@
+Turn off echo 
+=============
+    ATE
+    |
+    | OK
+
+Check if pin code is needed
+===========================
+    AT+CPIN?
+    | 
+    | +CPIN: READY
+    | 
+    | OK
+
+Set pin code if not ready
+=========================
+    AT+CPIN="1234"
+    | ERROR
+
+Disable pin code when ready
+===========================
+    AT+CLCK="SC",0,"1234"
+    |
+
+Register in network
+===================
+    AT+CREG=1
+    | OK
+
+Check SMS capability
+====================
+    AT+CSMS=0
+    | +CSMS: 1,1,1
+    | ERROR
+
+Write message to storage
+========================
+    AT+CMGW="+46702575687"
+    > Hej <ctl-z>
+    | +CMGW: 1
+
+Send message from storage (1)
+=============================
+    AT+CMSS=1
+    | +CMS ERROR: 331 (network not available)
+    | +CMS ERROR: 303 (....)
+
+Service center
+==============
+    AT+CSCA?
+    | +CSCA: "+46705008999",145
+
+Text/Pdu mode
+=============
+    AT+CMGF=1    text mode
+    AT+CMGF=0    pdu mode
+ 
+Receive SMS notification
+========================
+    AT+CNMI=1,1   - New incoming SMS is displayed like
+ 
+    | +CMTI: "SM",<x>   (x = counter)
+ 
+    AT+CNMI=1,2   - Display incoming messages on arrival (unsolicited)
+
+List SMS
+========
+    AT+CMGL
+    | +CMGL:<x>,"REC UNREAD","+number"
+    |    message
+ 
+    AT+CMGL="ALL"
+
+    AT+CMGL=1   (pdu mode)
+    | +CMGL: <x>,<y>,<str>,<len>
+    |  <PDU>
+    |
+ 
+Read SMS
+========
+    AT+CMGR=<x>
+
+Delete SMS
+==========
+    AT+CMGD=<x>(,<x>)*
+ 
+
+Send SMS in PDU mode
+====================
+
+
+    AT+CMGS=23  //Send message, 23 octets (excluding the two initial zeros)
+%% >0011000B916407281553F80000AA0AE8329BFD4697D9EC37<ctrl-z>
+%%)
+%% There are 23 octets in this message (46 'characters'). The first octet ("00")
+%% doesn't count, it is only an indicator of the length of the SMSC information
+%% supplied (0).
+%%
+%%
