@@ -247,7 +247,7 @@ send(Pdu) when is_record(Pdu, gsms_deliver_pdu) ->
 send_from(Pid,Pdu) when is_pid(Pid), is_record(Pdu, gsms_deliver_pdu) ->
     gen_server:cast(?SERVER, {send, Pid, Pdu}).
 
-sync_send(Pdu) when is_record(Frame, gsms_deliver_pdu) ->
+sync_send(Pdu) when is_record(Pdu, gsms_deliver_pdu) ->
     gen_server:call(?SERVER, {send, self(), Pdu}).
 
 sync_send_from(Pid,Pdu) when is_pid(Pid), is_record(Pdu, gsms_deliver_pdu) ->
@@ -284,9 +284,9 @@ init(_Args) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling call messages
 %%--------------------------------------------------------------------
-handle_call({send,Pid,Frame},_From, S)
-  when is_pid(Pid),is_record(Frame, gsms_frame) ->
-    S1 = broadcast(Pid,Frame,S),
+handle_call({send,Pid,Pdu},_From, S)
+  when is_pid(Pid),is_record(Pdu, gsms_deliver_pdu) ->
+    S1 = broadcast(Pid,Pdu,S),
     {reply, ok, S1}; 
 
 handle_call({attach,Pid}, _From, S) when is_pid(Pid) ->
@@ -346,7 +346,7 @@ handle_call(interfaces, _From, S) ->
 handle_call(applications, _From, S) ->
     {reply, S#s.apps, S};
 handle_call({add_filter,Intf,ID,Properties}, From, S) when 
-      is_integer(Intf), is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
+      is_integer(Intf), is_integer(ID) ->
     case lists:keysearch(Intf, #gsms_if.id, S#s.ifs) of
 	false ->
 	    {reply, {error, enoent}, S};
@@ -517,19 +517,20 @@ fs_list(Fs) when is_record(Fs, gsms_fs) ->
 %% return true for no filtering (pass through)
 %% return false for filtering
 %%
-fs_input(F, Fs) when is_record(F, gsms_frame), is_record(Fs, gsms_fs) ->
+fs_input(F, Fs) when is_record(F, gsms_submit_pdu), is_record(Fs, gsms_fs) ->
     case Fs#gsms_fs.filter of
 	[] -> true;  %% default to accept all
 	Filter -> filter_(F,Filter)
     end.
 
-filter_(Frame, [{_I,F}|Fs]) ->
-    Mask = F#gsms_filter.mask,
-    Cond = (Frame#gsms_frame.id band Mask) =:= (F#gsms_filter.id band Mask),
-    if ?is_not_gsms_id_inv_filter(F#gsms_filter.id), Cond ->
-	    true;
-       ?is_gsms_id_inv_filter(F#gsms_filter.id), not Cond ->
-	    true;
+filter_(Frame, [{_I,_F}|Fs]) ->
+%%    Mask = F#gsms_filter.mask,
+%%    Cond = (Frame#gsms_frame.id band Mask) =:= (F#gsms_filter.id band Mask),
+    if
+%% ?is_not_gsms_id_inv_filter(F#gsms_filter.id), Cond ->
+%%	    true;
+%%       ?is_gsms_id_inv_filter(F#gsms_filter.id), not Cond ->
+%%	    true;
        true ->
 	    filter_(Frame, Fs)
     end;
@@ -567,11 +568,11 @@ broadcast_apps(_Sender, _Frame, [], Sent) ->
     Sent.
 
 %% send to all interfaces, except the origin interface
-broadcast_ifs(Frame, [I|Is], Sent) when I#gsms_if.id =/= Frame#gsms_frame.intf ->
+broadcast_ifs(Frame, [I|Is], Sent) ->
     gen_server:cast(I#gsms_if.pid, {send, Frame}),
     broadcast_ifs(Frame, Is, Sent+1);
-broadcast_ifs(Frame, [_|Is], Sent) ->
-    broadcast_ifs(Frame, Is, Sent);
+%% broadcast_ifs(Frame, [_|Is], Sent) ->
+%%    broadcast_ifs(Frame, Is, Sent);
 broadcast_ifs(_Frame, [], Sent) ->
     Sent.
     

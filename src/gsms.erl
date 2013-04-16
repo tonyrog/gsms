@@ -12,6 +12,7 @@
 -export([decode_in/1, decode_in_hex/1]).
 -export([decode_out/1, decode_out_hex/1]).
 -export([hex_to_binary/1]).
+-import(lists, [reverse/1]).
 
 -include("../include/gsms.hrl").
 
@@ -19,7 +20,8 @@
 
 -define(decode_bool(X), ((X) =/= 0)).
 -define(encode_bool(X), if (X) -> 1; true -> 0 end).
--define(is_byte(X), (((X) band (bnot 16#ff)) =/= 0)).
+-define(is_byte(X), (((X) band (bnot 16#ff)) =:= 0)).
+-define(is_short(X), (((X) band (bnot 16#ffff)) =:= 0)).
 
 decode_in_hex(RawData) ->
     decode_in(hex_to_binary(RawData)).
@@ -35,21 +37,23 @@ decode_in(<<L1,SmscAddr:L1/binary,
       TP_SCTS:7/binary,TP_UDL,TP_UD/binary>> = Data0,
     AddrType = decode_addr_type(AType),
     Dcs = decode_dcs(TP_DCS),
+    {UDH,UD} = decode_ud(Dcs,TP_UDHI,TP_UDL,TP_UD),
     #gsms_deliver_pdu {
-			smsc = decode_smsc_addr(SmscAddr),
-			rp   = ?decode_bool(TP_RP),
-			udhi = ?decode_bool(TP_UDHI),
-			sri  = ?decode_bool(TP_SRI),
-			res1 = R1,
-			res2 = R2,
-			mms  = ?decode_bool(TP_MMS),
-			addr = decode_addr(AddrType,Addr),
-			pid = TP_PID,
-			dcs = Dcs,
-			scts = decode_scts(TP_SCTS),
-			udl  = TP_UDL,
-			ud = decode_ud(Dcs,TP_UDHI,TP_UDL,TP_UD)
-		      }.
+       smsc = decode_smsc_addr(SmscAddr),
+       rp   = ?decode_bool(TP_RP),
+       udhi = ?decode_bool(TP_UDHI),
+       sri  = ?decode_bool(TP_SRI),
+       res1 = R1,
+       res2 = R2,
+       mms  = ?decode_bool(TP_MMS),
+       addr = decode_addr(AddrType,Addr),
+       pid = TP_PID,
+       dcs = Dcs,
+       scts = decode_scts(TP_SCTS),
+       udl  = TP_UDL,
+       udh  = UDH,
+       ud   = UD
+      }.
 
 decode_out(<<L1,SmscAddr:L1/binary,
 	     TP_RP:1,TP_UDHI:1,TP_SRR:1,TP_VPF:2,TP_RD:1,?MTI_SMS_SUBMIT:2,
@@ -68,40 +72,56 @@ decode_out(<<L1,SmscAddr:L1/binary,
 	    end,
     <<VP:VPLen/binary, TP_UDL:8, TP_UD/binary>> = Data1,
     Dcs = decode_dcs(TP_DCS),
+    {UDH,UD} = decode_ud(Dcs,TP_UDHI,TP_UDL,TP_UD),
     #gsms_submit_pdu { 
-		       smsc = decode_smsc_addr(SmscAddr),
-		       rp   = ?decode_bool(TP_RP),
-		       udhi = ?decode_bool(TP_UDHI),
-		       srr  = ?decode_bool(TP_SRR),
-		       vpf  = VPF,
-		       rd   = ?decode_bool(TP_RD),
-		       mref = TP_MREF,
-		       addr = decode_addr(AddrType,Addr),
-		       pid = TP_PID,
-		       dcs = Dcs,
-		       vp  = decode_vp(VPF,VP),
-		       udl = TP_UDL,
-		       ud = decode_ud(Dcs,TP_UDHI,TP_UDL,TP_UD)
-		     }.
+       smsc = decode_smsc_addr(SmscAddr),
+       rp   = ?decode_bool(TP_RP),
+       udhi = ?decode_bool(TP_UDHI),
+       srr  = ?decode_bool(TP_SRR),
+       vpf  = VPF,
+       rd   = ?decode_bool(TP_RD),
+       mref = TP_MREF,
+       addr = decode_addr(AddrType,Addr),
+       pid = TP_PID,
+       dcs = Dcs,
+       vp  = decode_vp(VPF,VP),
+       udl = TP_UDL,
+       udh = UDH,
+       ud = UD
+      }.
 
-encode_sms_submit(Opts,Body) ->
+%% return a list of pdu's
+%-spec make_sms_submit(Opts::[opts()],Body::string()) -> {dcs(), [pdu()]}.
+			       
+make_sms_submit(Opts,Body) ->
     Pdu = set_pdu_opts(Opts,#gsms_submit_pdu{}),
-    %% fixme: may be moved to encode_sms!
-    {Udl,Ud} = encode_ud(Pdu#gsms_submit_pdu.dcs, Body),
-    Pdu1 = Pdu#gsms_submit_pdu { udl=Udl, ud=Ud },
-    dump_yang(Pdu1),
-    Bin = encode_sms(Pdu1),
-    binary_to_hex(Bin).
-
+    Ref = proplists:get_value(ref, Opts, 1),
+    {Dcs,UDList} = encode_ud(Pdu#gsms_submit_pdu.dcs, Body,
+			      Pdu#gsms_submit_pdu.udh, Ref),
+    lists:map(
+      fun({Udl,Ud,Udhi0}) ->
+	      Udhi = Udhi0 or Pdu#gsms_submit_pdu.udhi,
+	      Pdu#gsms_submit_pdu { dcs=Dcs, udl=Udl, ud=Ud, udhi=Udhi }
+      end, UDList).
 
 set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
     case Key of
-	smsc -> %% FIXME: check format
+	smsc when is_record(Value,gsms_addr) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { smsc=Value });	    
+	smsc when is_list(Value),hd(Value)=:=$+ ->
+	    Addr = #gsms_addr { type=international, addr=Value },
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { smsc=Addr });
+	smsc when is_list(Value) ->
+	    Addr = #gsms_addr { type=unknown, addr=Value },
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { smsc=Addr});
 	rp when is_boolean(Value) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { rp=Value });
 	udhi when is_boolean(Value) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { udhi=Value });
+	udh when is_list(Value), Value =/= [] ->
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { udhi=true, udh=Value });
+	udh when Value =:= [] ->
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { udhi=false, udh=Value });
 	srr when is_boolean(Value) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { srr=Value });
 	mref when ?is_byte(Value) ->
@@ -131,7 +151,11 @@ set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
 		    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Value })
 	    end;
 	vp ->
-	    set_pdu_opts(Kvs, R#gsms_submit_pdu { vp=Value })
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { vp=Value });
+	ref when is_integer(Value) ->
+	    %% ignore this option, used elsewhere
+	    set_pdu_opts(Kvs, R)
+
     end;
 set_pdu_opts([], R) ->
     R.
@@ -255,8 +279,8 @@ encode_smsc_addr(#gsms_addr {type=T,addr=A}) ->
 
 %% Handle the ones in use only! (FIXME)
 decode_addr_type(2#10000001) -> unknown;
-decode_addr_type(2#10101000) -> national;
 decode_addr_type(2#10010001) -> international;
+decode_addr_type(2#10101000) -> national;
 decode_addr_type(T) -> T.
 
 encode_addr_type(unknown)       -> 16#81; %% 129
@@ -274,7 +298,6 @@ encode_addr(#gsms_addr { type=T, addr=A }) ->
     Addr = encode_addr_semi(T, A),
     AddrLen = length(A),   %% number semi digits
     {encode_addr_type(T),Addr,AddrLen}.
-
 
 decode_addr_semi(international, SemiOctets) ->
     [$+|decode_semi_octets(SemiOctets)];
@@ -432,46 +455,256 @@ encode_dcs(V) when is_integer(V) ->
 %% FIXME: UDHL/UDH multi part header etc
 decode_ud([_Msg,uncompressed,default|_], 0, UDL, Data) ->
     L7 = UDL,                  %% number of septets
-    L8 = (L7*7 + 7) div 8,     %% number octets needed 
-    LB = ((L7 + 6) div 7)*7,   %% number of septet blocks
-    Pad = LB - L8,             %% the pad needed for decode_gsm7
-    io:format("Data: ~w\n", [Data]),
-    io:format("Gsm7:(#7:~w,#8:~w,#8*:~w)\n", [L7,L8,LB]),
-    <<Gsm8:L7/binary,_/binary>> = decode_gsm7(<<Data/binary,0:Pad/unit:8>>),
-    io:format("Gsm8: ~w\n", [Gsm8]),
-    gsms_0338:decode(Gsm8);
-decode_ud([_Msg,uncompressed,ucs2|_],_UDHI,_UDL,Data) ->
+    <<Gsm8:L7/binary,_/binary>> = decode_gsm7(Data),
+    {[],gsms_0338:decode(Gsm8)};
+decode_ud([_Msg,uncompressed,default|_], 1, UDL, Data = <<UDHL,_/binary>>) ->
+    %% UDHL as number of septets and including it self
+    UDHL7  = ((UDHL+1)*8 + 6) div 7,
+    L7 = UDL-UDHL7,  %% number of septets in message
+    <<_:UDHL7/binary,Gsm8:L7/binary,_/binary>> = decode_gsm7(Data),
+    <<_,UDHBin:UDHL/binary,_/binary>> = Data,
+    UDH = decode_udh(UDHBin),
+    {UDH,gsms_0338:decode(Gsm8)};
+decode_ud([_Msg,uncompressed,ucs2|_],0,_UDL,Data) ->
     %% FIXME: pad?
     Ucs = [ U || <<U:16/big>> <= Data ],
-    io:format("Ucs2: ~w\n", [Ucs]),
-    Ucs;
-decode_ud([_Msg,uncompressed,octet|_],_UDHI,_UDL,Data) ->
-    %% FIXME: pad?
+    {[],Ucs};
+decode_ud([_Msg,uncompressed,octet|_], 0,_UDL,Data) ->
     Octets = [ U || <<U:8>> <= Data ],
-    io:format("Octets: ~w\n", [Octets]),
-    Octets;
-decode_ud(_DCS,_UDHI,_UDL,UD) ->
-    UD.
+    {[],Octets}.
 
-encode_ud([_Msg,uncompressed,default|_], Message) ->
-    %% FIXME: Message => 7bit gsms_0338:encode(...)
-    Gsm8 = iolist_to_binary(Message),
-    L7 = byte_size(Gsm8),        %% number of septets
-    L8 = (L7*7 + 7) div  8,      %% number of octets needed
-    LB = ((L7 + 7) div 8)*8,     %% number of octet blocks
-    Pad = LB - L7,               %% the pad needed for encode_gsm7
-    io:format("L7=~w,L8=~w,LB=~w,Pad=~w\n",[L7,L8,LB,Pad]),
-    <<Gsm7:L8/binary,_/binary>> = encode_gsm7(<<Gsm8/binary,0:Pad/unit:8>>),
-    {L7,Gsm7};
-encode_ud([_Msg,uncompressed,ucs2|_], Message) ->
-    Udl = 2*length(Message),
-    {Udl, << <<U:16/big>> || U <- Message >>};
-encode_ud([_Msg,uncompressed,octet|_], Message) ->
-    Octets = iolist_to_binary(Message),
-    {byte_size(Octets), Octets}.
-    
-%% how invented this stupid encoding ?
-%% convert Septet coding into octet coding
+encode_ud([Msg,Comp,Alpha|Dcs0], Message, UDH, Ref) ->
+    %% fixme: check that there are no concat header ?
+    %% calculate total number of letters in message and the encoding
+    {Alpha1,_TotLen} = message_len(Message,Alpha),
+    Dcs = [Msg,Comp,Alpha1|Dcs0],
+    case encode_ud_(Dcs, Message, UDH) of
+	{UDL,UD,[],UDHI} ->
+	    {Dcs, [{UDL,iolist_to_binary(UD),UDHI}]};
+	{_UDL,_UD,_Message1,_} ->
+	    {Dcs,encode_ud_loop(Dcs, Message, UDH, Ref, 1, [])}
+    end.
+
+encode_ud_loop(Dcs, Message, UDH, Ref, I, Acc) ->
+    case encode_ud_(Dcs, Message, [{concat,Ref,0,I}|UDH]) of
+	{UDL,UD,[],UDHI} ->
+	    ud_patch([{UDL,UD,UDHI}|Acc], I, []);
+	{UDL,UD,Message1,UDHI} ->
+	    UDH1 = [], %% kill header for segments
+	    encode_ud_loop(Dcs,Message1,UDH1,Ref,I+1,[{UDL,UD,UDHI} | Acc])
+    end.
+
+%% patch concat and reverse list
+ud_patch([{UDL,UD,UDHI}|Tail], N, Acc) ->
+    case UD of
+	[UDHL,[<<?IE_CONCAT8,3,Ref:8,_N,I>>|UDH],Data] ->
+	    UD1 = iolist_to_binary([UDHL,[<<?IE_CONCAT8,3,Ref:8,N,I>>|UDH],
+				    Data]),
+	    ud_patch(Tail, N, [{UDL,UD1,UDHI}|Acc]);
+	[UDHL,[<<?IE_CONCAT16,4,Ref:16,_N,I>>|UDH],Data] ->
+	    UD1 = iolist_to_binary([UDHL,[<<?IE_CONCAT16,4,Ref:16,N,I>>|UDH],
+				    Data]),
+	    ud_patch(Tail, N, [{UDL,UD1,UDHI}|Acc])
+    end;
+ud_patch([], _N, Acc) ->
+    Acc.
+
+
+encode_ud_([_Msg,uncompressed,default|_], Message, UDH) ->
+    case len_udh(UDH) of
+	0 ->
+	    {Gsm8,Message1} = gsms_0338:encode(Message,?MAX_7BIT_LEN),
+	    L7 = byte_size(Gsm8),        %% number of septets
+	    L8 = (L7*7 + 7) div  8,      %% number of octets needed
+	    <<Gsm7:L8/binary,_/binary>> = encode_gsm7(Gsm8),
+	    {L7,Gsm7,Message1,false};
+	UDHL ->
+	    %% UDHL as number of septets and including it self
+	    UDHL8  = (UDHL+1)*8,        %% number of bits including self
+	    UDHL7  = (UDHL8 + 6) div 7, %% number of septets
+	    UDHData = encode_udh(UDH),
+	    Message0 = prepend(UDHL7,0,Message),
+	    {Gsm8,Message1} = gsms_0338:encode(Message0,?MAX_7BIT_LEN-UDHL7),
+	    Pad  = UDHL7*7 - UDHL8,
+	    L7 = byte_size(Gsm8)-UDHL7,  %% number of septets in message
+	    L8 = (L7*7+Pad+7) div  8,    %% number of octets needed
+	    <<_,_:UDHL/binary,Gsm7:L8/binary,_/binary>> = encode_gsm7(Gsm8),
+	    {UDHL7+L7,[UDHL,UDHData,Gsm7],Message1,true}
+    end;
+encode_ud_([_Msg,uncompressed,ucs2|_], Message, UDH) ->
+    case len_udh(UDH) of
+	0 ->
+	    {Ucs2,Message1} = encode_ucs2(Message,?MAX_16BIT_LEN,[]),
+	    N = byte_size(Ucs2),
+	    {N, Ucs2, Message1, false};
+	UDHL ->
+	    UDHData = encode_udh(UDH),
+	    UDHL16 = (UDHL+1) div 2,
+	    {Ucs2,Message1} = encode_ucs2(Message,?MAX_16BIT_LEN-UDHL16,[]),
+	    N = byte_size(Ucs2),
+	    Ucs21 = prepend(UDHL band 1,0,Ucs2),
+	    {UDHL16+N,[UDHL,UDHData,Ucs21],Message1,true}
+    end;
+encode_ud_([_Msg,uncompressed,octet|_], Message, UDH) ->
+    case len_udh(UDH) of
+	0 ->
+	    {Octets,Message1} = encode_octets(Message,?MAX_8BIT_LEN,[]),
+	    N = byte_size(Octets),
+	    {N, Octets, Message1, false};
+	UDHL ->
+	    UDHData = encode_udh(UDH),
+	    {Octets,Message1} = encode_octets(Message,?MAX_8BIT_LEN-UDHL,[]),
+	    N = byte_size(Octets),
+	    {UDHL+N,[UDHL,UDHData,Octets],Message1,true}
+    end.
+
+
+
+encode_octets(Cs, 0, Acc) -> 
+    {iolist_to_binary(lists:reverse(Acc)), Cs};
+encode_octets([C|Cs], I, Acc) -> 
+    encode_octets(Cs, I-1, [C|Acc]);
+encode_octets([], _I, Acc) -> 
+    {iolist_to_binary(lists:reverse(Acc)), []}.
+
+%%
+%% Fixme: add BOM (byte order mark) character
+%% BOM = 0xFEFF, if BOM is received as 0xFEFF then 
+%% it is coded in default big endian, else it
+%% will be read as 0xFFFE and is coded in little endian.
+%%
+encode_ucs2(Cs, 0, Acc) -> 
+    {iolist_to_binary(lists:reverse(Acc)), Cs};
+encode_ucs2([C|Cs], I, Acc) -> 
+    encode_ucs2(Cs, I-1, [<<C:16/big>>|Acc]);
+encode_ucs2([], _I, Acc) -> 
+    {iolist_to_binary(lists:reverse(Acc)), []}.
+
+
+
+message_len(Cs) ->
+    message_len_auto_(Cs,0).
+
+message_len(Cs,auto) ->
+    message_len_auto_(Cs,0);
+message_len(Cs,default) ->
+    {default,message_len_default_(Cs,0)};
+message_len(Cs,octet) ->
+    {octet,message_len_octet_(Cs,0)};
+message_len(Cs,ucs2) ->
+    {ucs2,message_len_ucs2_(Cs,0)}.
+
+
+message_len_auto_(Cs,N) ->
+    try message_len_default_(Cs,N) of
+	Len7 -> {default,Len7}
+    catch
+	error:_ ->
+	    {ucs2,message_len_ucs2_(Cs,N)}
+    end.
+
+message_len_default_([C|Cs], Len) ->
+    case gsms_0338:encode_char(C) of
+	[_Esc,_Y] -> message_len_default_(Cs, Len+2);
+	_Y -> message_len_default_(Cs, Len+1)
+    end;
+message_len_default_([], Len) ->
+    Len.
+
+message_len_octet_([C|Cs], Len) when ?is_byte(C) ->
+    message_len_octet_(Cs, Len+1);
+message_len_octet_([], Len) ->
+    Len.
+
+message_len_ucs2_([C|Cs], Len) when ?is_short(C) ->
+    message_len_ucs2_(Cs, Len+1);
+message_len_ucs2_([], Len) ->
+    Len.
+
+	
+%%
+%% Calculate number of bytes in UDH (not incuding the length byte)
+%%
+-spec len_udh(IEs::[ie()]) -> integer().
+
+len_udh([]) ->
+    0;
+len_udh(IEs) ->
+    len_udh(IEs, 0).
+
+len_udh([{concat,Ref,_N,_I}|IEs],Len) ->
+    if Ref >= 0, Ref =< 16#ff ->   len_udh(IEs, Len+5);
+       Ref >= 0, Ref =< 16#ffff -> len_udh(IEs, Len+6)
+    end;
+len_udh([{concat8,_Ref,_N,_I}|IEs], Len) -> len_udh(IEs,Len+5);
+len_udh([{concat16,_Ref,_N,_I}|IEs], Len) -> len_udh(IEs,Len+6);
+len_udh([{port,Dst,Src}|IEs], Len) ->
+    if Dst >= 0, Dst =< 16#ff,
+       Src >= 0, Src =< 16#ff ->
+	    len_udh(IEs,Len+4);
+       Dst >= 0, Dst =< 16#ffff,
+       Src >= 0, Src =< 16#ffff ->
+	    len_udh(IEs,Len+6)
+    end;
+len_udh([{port8,_Dst,_Src}|IEs], Len) -> len_udh(IEs,Len+4);
+len_udh([{port16,_Dst,_Src}|IEs],Len) -> len_udh(IEs,Len+6);
+len_udh([], Len) -> Len.
+
+%%
+%% Encode user data header IEs 
+%%
+-spec encode_udh(IEs::[ie()]) -> [binary()].
+
+encode_udh([]) ->
+    [];
+encode_udh(IEs) ->
+    encode_udh(IEs, []).
+
+encode_udh([{concat,Ref,N,I}|IEs], Acc) ->
+    if Ref >= 0, Ref =< 16#ff ->
+	    encode_udh(IEs,[ <<?IE_CONCAT8,3,Ref,N,I>>|Acc]);
+       Ref >= 0, Ref =< 16#ffff ->
+	    encode_udh(IEs,[ <<?IE_CONCAT16,4,Ref:16,N,I>> | Acc ])
+    end;
+encode_udh([{concat8,Ref,N,I}|IEs], Acc) ->
+    encode_udh(IEs,[ <<?IE_CONCAT8,3,Ref,N,I>>|Acc]);
+encode_udh([{concat16,Ref,N,I}|IEs], Acc) ->
+    encode_udh(IEs,[ <<?IE_CONCAT16,4,Ref:16,N,I>> | Acc ]);
+encode_udh([{port,Dst,Src}|IEs], Acc) ->
+    if Dst >= 0, Dst =< 16#ff,
+       Src >= 0, Src =< 16#ff ->
+	    encode_udh(IEs,[ <<?IE_PORT8,2,Dst,Src>> | Acc]);
+       Dst >= 0, Dst =< 16#ffff,
+       Src >= 0, Src =< 16#ffff ->
+	    encode_udh(IEs,[<<?IE_PORT16,4,Dst:16,Src:16>> | Acc])
+    end;
+encode_udh([{port8,DstPort,SrcPort}|IEs], Acc) ->
+    encode_udh(IEs,[ <<?IE_PORT8,2,DstPort,SrcPort>> | Acc]);
+encode_udh([{port16,DstPort,SrcPort}|IEs],Acc) ->
+    encode_udh(IEs,[<<?IE_PORT16,4,DstPort:16,SrcPort:16>> | Acc]);
+encode_udh([{ie,IE,Args}|IEs], Acc) when is_binary(Args) ->
+    encode_udh(IEs,[<<IE,(byte_size(Args)),Args/binary>> | Acc]);
+encode_udh([], Acc) ->
+    reverse(Acc).
+
+
+decode_udh(UDHBin) when is_binary(UDHBin) ->
+    decode_udh(UDHBin, []).
+
+decode_udh(<<?IE_CONCAT8,3,Ref,N,I,IEs/binary>>, Acc) ->
+    decode_udh(IEs,[{concat,Ref,N,I}|Acc]);
+decode_udh(<<?IE_CONCAT16,4,Ref:16,N,I,IEs/binary>>,Acc) ->
+    decode_udh(IEs,[{concat,Ref,N,I}|Acc ]);
+decode_udh(<<?IE_PORT8,2,DstPort,SrcPort,IEs/binary>>, Acc) ->
+    decode_udh(IEs,[{port,DstPort,SrcPort}| Acc]);
+decode_udh(<<?IE_PORT16,4,DstPort:16,SrcPort:16,IEs/binary>>,Acc) ->
+    decode_udh(IEs,[{port,DstPort,SrcPort} | Acc]);
+decode_udh(<<IE,N,Args:N/binary,IEs/binary>>,Acc) ->
+    decode_udh(IEs,[{ie,IE,Args}|Acc]);
+decode_udh(<<>>, Acc) ->
+    reverse(Acc).
+
+
 decode_gsm7(<<X1:1,Y7:7, X2:2,Y6:6, X3:3,Y5:5, X4:4,Y4:4,
 	      X5:5,Y3:3, X6:6,Y2:2, X7:7,Y1:1,  More/binary>>) ->
     <<0:1,Y7:7,
@@ -484,18 +717,38 @@ decode_gsm7(<<X1:1,Y7:7, X2:2,Y6:6, X3:3,Y5:5, X4:4,Y4:4,
       0:1,X7:7,
       (decode_gsm7(More))/binary>>;
 decode_gsm7(<<>>) ->
-    <<>>.
+    <<>>;
+decode_gsm7(More) when byte_size(More) > 0, 
+		       byte_size(More) < 7 ->
+    Pad = 7 - byte_size(More), %% 6..1
+    decode_gsm7(<<More/binary, 0:Pad/unit:8>>).
+    
 
-%% padding must be added before this procedure
+
+%% encode gsm7 bit encoding
 encode_gsm7(<<0:1,Y7:7,      0:1,Y6:6,X1:1, 0:1,Y5:5,X2:2, 0:1,Y4:4,X3:3,
 	      0:1,Y3:3,X4:4, 0:1,Y2:2,X5:5, 0:1,Y1:1,X6:6, 0:1,     X7:7,
 	      More/binary >>) ->
     <<X1:1,Y7:7, X2:2,Y6:6, X3:3,Y5:5, X4:4,Y4:4,
-      X5:5,Y3:3, X6:6,Y2:2, X7:7,Y1:1,  
+      X5:5,Y3:3, X6:6,Y2:2, X7:7,Y1:1,
       (encode_gsm7(More))/binary >>;
 encode_gsm7(<<>>) ->
-    <<>>.
+    <<0>>;  %% extra bits to compensate for UDH padding.
+encode_gsm7(More) when byte_size(More) > 0,
+		       byte_size(More) < 8 ->
+    Pad = 8 - byte_size(More),  %% 7..1
+    encode_gsm7(<<More/binary, 0:Pad/unit:8>>).
 
+%% prepend N number of E's to a list
+prepend(N,E,List) when is_list(List) ->
+    prepend_list(N,E,List);
+prepend(N,E,Binary) when is_binary(Binary) ->
+    <<E:N/unit:8, Binary/binary>>.
+
+prepend_list(0,_,Acc) -> Acc;
+prepend_list(I,E,Acc) -> prepend_list(I-1,E,[E|Acc]).
+
+    
 
 is_gsms_record(P) ->
     case P of

@@ -16,7 +16,7 @@
 %%%---- END COPYRIGHT ----------------------------------------------------------
 %%%-------------------------------------------------------------------
 %%% @author Tony Rogvall <tony@rogvall.se>
-%%% @author Malotte Westman L�nne <malotte@malotte.net>
+%%% @author Malotte Westman Lönne <malotte@malotte.net>
 %%% @copyright (C) 2012, Tony Rogvall
 %%% @doc
 %%%     SMS command driver.
@@ -30,7 +30,6 @@
 
 -include_lib("lager/include/log.hrl").
 
--export([start_link/0]).
 %% API
 -export([start_link/1, 
 	 stop/1,
@@ -39,7 +38,7 @@
 	 unsubscribe/2,
 	 debug/2,
 	 setopts/2,
-	 at/2]).
+	 at/2, ats/2, atd/2]).
 
 %% Option processing
 -export([options/0,
@@ -61,6 +60,7 @@
 -export([get_network_registration_status/1]).
 -export([get_signal_strength/1]).
 -export([get_battery_status/1]).
+-export([get_smsc/1]).
 
 %% sms
 -export([list_unread_messages/1]).
@@ -175,7 +175,20 @@ check_csms_capability(Drv) ->
 
 set_csms_pdu_mode(Drv) ->  at(Drv,"+CMGF=0").
 
-set_csms_notification(Drv) -> at(Drv,"+CNMI=1,1").
+%% AT+CNMI=1,1,0,0,0 Set the new message indicators.
+%%
+%% AT+CNMI=<mode>,<mt>,<bm>,<ds>,<bfr>
+%% 
+%% <mode>=1 discard unsolicited result codes indication when TA – 
+%%          TE link is reserved.
+%% <mt>=1 SMS-DELIVERs are delivered to the SIM and routed using 
+%%        unsolicited code.
+%% <bm>=0 no CBM indications are routed to the TE.
+%% <ds>=0 no SMS-STATUS-REPORTs are routed.
+%% <bfr>=0 TA buffer of unsolicited result codes defined within this
+%%         command is flushed to the TE.
+%% OK Modem Response.
+set_csms_notification(Drv) -> at(Drv,"+CNMI=1,1,0,0,0").
 
 %% pick up information about various things
 get_version(Drv) -> at(Drv,"+CGMR").
@@ -197,6 +210,9 @@ get_network_registration_status(Drv) -> at(Drv,"+CREG?").
 get_signal_strength(Drv) -> at(Drv,"+CSQ").
 
 get_battery_status(Drv) -> at(Drv,"+CBC").
+
+get_smsc(Drv) -> at(Drv, "+CSCA?").
+    
 
 %% SMS commands
 list_unread_messages(Drv) ->  at(Drv,"+CMGL=0").
@@ -226,17 +242,19 @@ list_indices(Drv) ->
 %% +CMGD=I,3  == +CMGD=0,3   delete ALL "read","sent", "unsent" messages
 %% +CMFD=I,4  == +CMGD=0,4   delete ALL messages
 
-delete_message(Drv,I) when is_integer(I), I>0 ->
+delete_message(Drv,I) when is_integer(I), I>=0 ->
     delete_message(Drv,I,0).
 
-delete_message(Drv,I,F) when is_integer(I), I>0, F>=0,F=<4 ->
+delete_message(Drv,I,F) when is_integer(I), I>=0, F>=0,F=<4 ->
     at(Drv,"+CMGD="++integer_to_list(I)++","++integer_to_list(F)).
 
 delete_all_message(Drv) ->
     delete_message(Drv,1,4).
 
-read_message(Drv,I) when is_integer(I), I>0 ->
+read_message(Drv,I) when is_integer(I), I>=0 ->
     case at(Drv,"+CMGR="++integer_to_list(I)) of
+	ok ->
+	    {error, no_such_index};
 	{ok,["+CMGR: "++_StatStoreLen,HexPdu]} ->
 	    {ok,gsms:decode_in_hex(HexPdu)};
 	{error, Error} ->
@@ -247,20 +265,31 @@ read_all_messages(Drv) ->
     at(Drv,"+CMGL=1").
 
 send_message(Drv,Opts,Body) ->
-    Hex = gsms:encode_sms_submit(Opts, Body),
-    Len = length(Hex)-2,
-    case ats(Drv,"+CMGS="++integer_to_list(Len)) of
-	ready_to_send -> atd(Drv,Hex);
-	Error -> Error
-    end.
+    lists:foreach(
+      fun(Pdu) ->
+	      gsms:dump_yang(Pdu),
+	      Bin = gsms:encode_sms(Pdu),
+	      Hex = gsms:binary_to_hex(Bin),
+	      Len = (length(Hex)-2) div 2,
+	      case ats(Drv,"+CMGS="++integer_to_list(Len)) of
+		  ready_to_send -> atd(Drv,Hex);
+		  Error -> Error
+	      end
+      end, gsms:make_sms_submit(Opts, Body)).
+
 
 write_message(Drv,Opts,Body) ->
-    Hex = gsms:encode_sms_submit(Opts, Body),
-    Len = length(Hex)-2,
-    case ats(Drv,"+CMGW="++integer_to_list(Len)) of
-	ready_to_send -> atd(Drv,Hex);
-	Error -> Error
-    end.
+    lists:foreach(
+      fun(Pdu) ->
+	      gsms:dump_yang(Pdu),
+	      Bin = gsms:encode_sms(Pdu),
+	      Hex = gsms:binary_to_hex(Bin),
+	      Len = (length(Hex)-2) div 2,
+	      case ats(Drv,"+CMGW="++integer_to_list(Len)) of
+		  ready_to_send -> atd(Drv,Hex);
+		  Error -> Error
+	      end
+      end, gsms:make_sms_submit(Opts, Body)).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -278,7 +307,9 @@ write_message(Drv,Opts,Body) ->
 		   ignore | 
 		   {error, Error::term()}.
 %%
-%% MAJOR FIXME: handle more than one device!
+%% HUAWEI: uses device /dev/tty.HUAWEIMobile-Pcui
+%% for SMS services to be able to get notifications which are
+%% NOT available on /dev/tty.HUAWEIMobile-Modem
 %%
 start_link(Opts) ->
     lager:info("~p: start_link: args = ~p\n", [?MODULE, Opts]),
@@ -289,10 +320,6 @@ start_link(Opts) ->
 	    Opts1 = proplists:delete(name, Opts),
 	    gen_server:start_link({local,Name},?MODULE, Opts1, [])
     end.
-
-%% debug
-start_link() ->
-    start_link([{name,gsms},{device,"/dev/tty.usbserial-FTF5DP2J"},debug]).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -307,7 +334,7 @@ stop(Drv) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Subscribe to telldus (duo) events.
+%% Subscribe to sms events.
 %%
 %% @end
 %%--------------------------------------------------------------------
@@ -319,7 +346,7 @@ subscribe(Drv,Pattern) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Subscribe to telldus (duo) events.
+%% Subscribe to sms events.
 %%
 %% @end
 %%--------------------------------------------------------------------
@@ -329,7 +356,7 @@ subscribe(Drv) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Unsubscribe from telldus (duo) events.
+%% Unsubscribe from sms events.
 %%
 %% @end
 %%--------------------------------------------------------------------
@@ -370,11 +397,11 @@ at(Drv,Command) ->
 
 %% at command that could lead to data-enter state
 ats(Drv,Command) ->
-    gen_server:call(Drv, {ats,Command}).
+    gen_server:call(Drv, {ats,Command}, 10000).
 
 %% send data in data-enter state
 atd(Drv, Hex) ->
-    gen_server:call(Drv, {atd,Hex}).
+    gen_server:call(Drv, {atd,Hex}, 20000).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -562,7 +589,7 @@ handle_call({at,Command},From,Ctx) ->
 	U ->
 	    case uart:send(U, ["AT",Command,"\r\n"]) of
 		ok ->
-		    lager:debug("command: sent\n", []),
+		    lager:debug("command: sent"),
 		    %% Wait for confirmation
 		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,5000),
 		    TRef = erlang:start_timer(Tm, self(), reply),
@@ -864,6 +891,7 @@ next_command(Ctx) ->
 	{{value,{cast,Cast}}, Q1} ->
 	    handle_cast(Cast, Ctx#ctx { queue=Q1});
 	{empty, Q1} ->
+	    uart:setopts(Ctx#ctx.uart, [{active,true}]),
 	    {noreply, Ctx#ctx { queue=Q1}}
     end.
 
