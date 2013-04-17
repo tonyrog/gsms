@@ -14,565 +14,356 @@
 %%% KIND, either express or implied.
 %%%
 %%%---- END COPYRIGHT ----------------------------------------------------------
+%%% @author Tony Rogvall <tony@rogvall.se>
+%%% @doc
+%%%     Message router for SMS
+%%% @end
+%%% Created : 17 Apr 2013 by Tony Rogvall <tony@rogvall.se>
 %%%-------------------------------------------------------------------
-%%% File    : gsms_router.erl
-%%% Author  : Tony Rogvall <tony@PBook.lan>
-%%% Description : SMS router
-%%%
-%%% Created : 22 Oct 2012 by Tony Rogvall <tony@rogvall.se>
-%%%-------------------------------------------------------------------
-
 -module(gsms_router).
 
 -behaviour(gen_server).
 
 %% API
--export([start/0, start/1, stop/0]).
--export([start_link/0, start_link/1]).
--export([join/1]).
--export([attach/0, detach/0]).
--export([send/1, send_from/2]).
--export([sync_send/1, sync_send_from/2]).
--export([input/1, input_from/2]).
--export([add_filter/4, del_filter/2, get_filter/2, list_filter/1]).
--export([stop/1, restart/1]).
--export([i/0, i/1]).
--export([statistics/0]).
--export([debug/2, interfaces/0, interface/1, interface_pid/1]).
-
-
-%% Backend interface
--export([fs_new/0, fs_add/2, fs_add/3, fs_del/2, fs_get/2, fs_list/1]).
--export([fs_input/2]).
+-export([start_link/1]).
+-compile(export_all).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
--import(lists, [foreach/2, map/2, foldl/3]).
-
+-include_lib("lager/include/log.hrl").
 -include("../include/gsms.hrl").
 
--define(SERVER, gsms_router).
+-define(SERVER, ?MODULE). 
 
-%% Filter structure (also used by backends)
--record(gsms_fs,
+-type addr() :: #gsms_addr{} | string().
+
+-type filter() :: 
+	[filter()] |
+	{type,  message|message_waiting|data} |
+	{class, alert|me|sim|te} |
+	{alphabet, default|ucs2|octet} |
+	{pid, 0..255} |
+	{src, 0..65535} |
+	{src, 0..65535} |
+	{anumber, addr()} |
+	{bnumber, addr()} |
+	{smsc, addr()} |
+	{'not', filter()} |
+	{'and', filter(), filter()} |
+	{'or', filter(), filter()}.
+	
+-record(subscription,
 	{
-	  next_id = 1,
-	  filter = []  %% [{I,#gsms_filter{}}]
+	  pid  :: pid(),       %% subscriber process
+	  ref  :: reference(), %% reference / monitor
+	  filter = [] :: filter()
 	}).
 
--record(gsms_if,
+-record(interface,
 	{
-	  pid,      %% gsms_drv interface pid
-	  id,       %% interface id
-	  mon,      %% can app monitor
-	  param     %% match param normally {Mod,Name,Index} 
+	  pid     :: pid(),       %% interface pid
+	  mon     :: reference(), %% monitor reference
+	  bnumber :: addr(),      %% modem msisdn
+	  attributes = [] :: [{atom(),term()}]  %% general match keys
 	}).
 
--record(gsms_app,
+-record(state, 
 	{
-	  pid,       %% can app pid
-	  mon,       %% can app monitor
-	  interface  %% interface id
-	 }).
-
--record(s,
-	{
-	  if_count = 1,  %% interface id counter
-	  apps = [],     %% attached can applications
-	  ifs  = [],     %% joined interfaces
-	  stat_in=0,     %% number of input sms received
-	  stat_err=0,    %% number of error sms received
-	  stat_out=0     %% number of output sms sent
+	  subs = [] :: [#subscription{}],
+	  ifs  = [] :: [#interface{}]
 	}).
 
-%%====================================================================
-%% API
-%%====================================================================
-%%--------------------------------------------------------------------
-%% Function: start_link() -> {ok,Pid} | ignore | {error,Error}
-%% Description: Starts the server
-%%--------------------------------------------------------------------
-start_link() ->  start_link([]).
+%%%===================================================================
+%%% API
+%%%===================================================================
 
-start_link(Args) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
 
-start() -> start([]).
+send(Opts, Body) ->
+    gen_server:call(?SERVER, {send, Opts, Body}).
 
-start(Args) ->
-    gen_server:start({local, ?SERVER}, ?MODULE, Args, []).
+-spec subscribe(Filter::[filter()]) -> {ok,Ref::reference()} |
+				       {error,Reason::term()}.
 
-statistics() ->
-    IFs = gen_server:call(?SERVER, interfaces),
-    foldl(
-      fun(If,Acc) ->
-	      case gen_server:call(If#gsms_if.pid, statistics) of
-		  {ok,Stat} ->
-		      [{If#gsms_if.id,Stat} | Acc];
-		  Error ->
-		      [{If#gsms_if.id,Error}| Acc]
-	      end
-      end, [], IFs).
+subscribe(Filter) ->
+    gen_server:call(?SERVER, {subscribe, self(), Filter}).
 
-i() ->
-    IFs = gen_server:call(?SERVER, interfaces),
-    io:format("Interfaces\n",[]),
-    lists:foreach(
-      fun(If) ->
-	      case gen_server:call(If#gsms_if.pid, statistics) of
-		  {ok,Stat} ->
-		      print_stat(If, Stat);
-		  Error ->
-		      io:format("~2w: ~p\n  error = ~p\n",
-				[If#gsms_if.id,If#gsms_if.param,Error])
-	      end
-      end, lists:keysort(#gsms_if.id, IFs)),
-    Apps = gen_server:call(?SERVER, applications),
-    io:format("Applications\n",[]),
-    lists:foreach(
-      fun(App) ->
-	      Name = case process_info(App#gsms_app.pid, registered_name) of
-			 {registered_name, Nm} -> atom_to_list(Nm);
-			 _ -> ""
-		     end,
-	      io:format("~w: ~s interface=~p\n",
-			[App#gsms_app.pid,Name,App#gsms_app.interface])
-      end, Apps).
-    
+-spec unsubscribe(Ref::reference()) -> ok.
 
-interfaces() ->
-    gen_server:call(?SERVER, interfaces).
+unsubscribe(Ref) ->
+    gen_server:call(?SERVER, {unsubscribe, Ref}).
 
-interface(Id) ->
-    IFs = interfaces(),
-    case lists:keysearch(Id, #gsms_if.id, IFs) of
-	false ->
-	    {error, enoent};
-	{value, IF} ->
-	    {ok,IF}
-    end.
-
-interface_pid(Id) ->
-    {ok,IF} = interface(Id),
-    IF#gsms_if.pid.
-
-debug(Id, Bool) ->
-    call_if(Id, {debug, Bool}).
-
-stop(Id) ->
-    call_if(Id, stop).    
-
-restart(Id) ->
-    case gen_server:call(?SERVER, {interface,Id}) of
-	{ok,If} ->
-	    case If#gsms_if.param of
-		{gsms_usb,_,N} ->
-		    ok = gen_server:call(If#gsms_if.pid, stop),
-		    gsms_usb:start(N);
-		{gsms_udp,_,N} ->
-		    ok = gen_server:call(If#gsms_if.pid, stop),
-		    gsms_udp:start(N-51712);
-		{gsms_sock,IfName,_Index} ->
-		    ok = gen_server:call(If#gsms_if.pid, stop),
-		    gsms_sock:start(IfName)
-	    end;
-	Error ->
-	    Error
-    end.
-
-i(Id) ->
-    case gen_server:call(?SERVER, {interface,Id}) of
-	{ok,If} ->
-	    case gen_server:call(If#gsms_if.pid, statistics) of
-		{ok,Stat} ->
-		    print_stat(If, Stat);
-		Error ->
-		    Error
-	    end;
-	Error ->
-	    Error
-    end.
-
-print_stat(If, Stat) ->
-    io:format("~2w: ~p\n", [If#gsms_if.id, If#gsms_if.param]),
-    lists:foreach(
-      fun({Counter,Value}) ->
-	      io:format("  ~p: ~w\n", [Counter, Value])
-      end, lists:sort(Stat)).
-
-call_if(Id, Request) ->	
-    case gen_server:call(?SERVER, {interface,Id}) of
-	{ok,If} ->
-	    gen_server:call(If#gsms_if.pid, Request);
-	{error,enoent} ->
-	    io:format("~2w: no such interface\n", [Id]),
-	    {error,enoent};
-	Error ->
-	    Error
-    end.
-
-stop() ->
-    gen_server:call(?SERVER, stop).
-
-%% attach - simulated can bus or application
-attach() ->
-    gen_server:call(?SERVER, {attach, self()}).
-
-%% detach the same
-detach() ->
-    gen_server:call(?SERVER, {detach, self()}).
-
-%% add an interface to the simulated gsms_bus (may be a real canbus)
-join(Params) ->
-    gen_server:call(?SERVER, {join, self(), Params}).
-
-add_filter(Intf, Invert, ID, Mask) when 
-      is_boolean(Invert), is_integer(ID), is_integer(Mask) ->
-    gen_server:call(?SERVER, {add_filter, Intf, Invert, ID, Mask}).
-
-del_filter(Intf, I) ->
-    gen_server:call(?SERVER, {del_filter, Intf, I}).
-
-get_filter(Intf, I) ->
-    gen_server:call(?SERVER, {get_filter, Intf, I}).
-
-list_filter(Intf) ->
-    gen_server:call(?SERVER, {list_filter, Intf}).
-
-send(Pdu) when is_record(Pdu, gsms_deliver_pdu) ->
-    gen_server:cast(?SERVER, {send, self(), Pdu}).
-
-send_from(Pid,Pdu) when is_pid(Pid), is_record(Pdu, gsms_deliver_pdu) ->
-    gen_server:cast(?SERVER, {send, Pid, Pdu}).
-
-sync_send(Pdu) when is_record(Pdu, gsms_deliver_pdu) ->
-    gen_server:call(?SERVER, {send, self(), Pdu}).
-
-sync_send_from(Pid,Pdu) when is_pid(Pid), is_record(Pdu, gsms_deliver_pdu) ->
-    gen_server:call(?SERVER, {send, Pid, Pdu}).
-
-%% Input from  backends
-input(Pdu) when is_record(Pdu, gsms_submit_pdu) ->
-    gen_server:cast(?SERVER, {input, self(), Pdu}).
-
-input_from(Pid,Pdu) when is_pid(Pid), is_record(Pdu, gsms_submit_pdu) ->
-    gen_server:cast(?SERVER, {input, Pid, Pdu}).
-
-%%====================================================================
-%% gen_server callbacks
-%%====================================================================
-
-%%--------------------------------------------------------------------
-%% Function: init(Args) -> {ok, State} |
-%%                         {ok, State, Timeout} |
-%%                         ignore               |
-%%                         {stop, Reason}
-%% Description: Initiates the server
-%%--------------------------------------------------------------------
-init(_Args) ->
-    process_flag(trap_exit, true),
-    {ok, #s{}}.
-
-%%--------------------------------------------------------------------
-%% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
-%%                                      {reply, Reply, State, Timeout} |
-%%                                      {noreply, State} |
-%%                                      {noreply, State, Timeout} |
-%%                                      {stop, Reason, Reply, State} |
-%%                                      {stop, Reason, State}
-%% Description: Handling call messages
-%%--------------------------------------------------------------------
-handle_call({send,Pid,Pdu},_From, S)
-  when is_pid(Pid),is_record(Pdu, gsms_deliver_pdu) ->
-    S1 = broadcast(Pid,Pdu,S),
-    {reply, ok, S1}; 
-
-handle_call({attach,Pid}, _From, S) when is_pid(Pid) ->
-    Apps = S#s.apps,
-    case lists:keysearch(Pid, #gsms_app.pid, Apps) of
-	false ->
-	    Mon = erlang:monitor(process, Pid),
-	    %% We may extend app interface someday - now = 0
-	    App = #gsms_app { pid=Pid, mon=Mon, interface=0 },
-	    Apps1 = [App | Apps],
-	    {reply, ok, S#s { apps = Apps1 }};
-	{value,_} ->
-	    {reply, ok, S}
-    end;
-handle_call({detach,Pid}, _From, S) when is_pid(Pid) ->
-    Apps = S#s.apps,
-    case lists:keysearch(Pid, #gsms_app.pid, Apps) of
-	false ->
-	    {reply, ok, S};
-	{value,App=#gsms_app {}} ->
-	    Mon = App#gsms_app.mon,
-	    erlang:demonitor(Mon),
-	    receive {'DOWN',Mon,_,_,_} -> ok
-	    after 0 -> ok
-	    end,
-	    {reply,ok,S#s { apps = Apps -- [App] }}
-    end;
-handle_call({join,Pid,Param}, _From, S) ->
-    case lists:keysearch(Param, #gsms_if.param, S#s.ifs) of
-	false ->
-	    Mon = erlang:monitor(process, Pid),
-	    ID = S#s.if_count,
-	    If = #gsms_if { pid=Pid, id=ID, mon=Mon, param=Param },
-	    Ifs1 = [If | S#s.ifs ],
-	    S1 = S#s { if_count = ID+1, ifs = Ifs1 },
-	    link(Pid),
-	    {reply, {ok,ID}, S1};
-	{value,_} ->
-	    {reply, {error,ealready}, S}
-    end;
-handle_call({interface,I}, _From, S) when is_integer(I) ->
-    case lists:keysearch(I, #gsms_if.id, S#s.ifs) of
-	false ->
-	    {reply, {error,enoent}, S};
-	{value,If} ->
-	    {reply, {ok,If}, S}
-    end;
-handle_call({interface,Param}, _From, S) ->
-    case lists:keysearch(Param, #gsms_if.param, S#s.ifs) of
-	false ->
-	    {reply, {error,enoent}, S};
-	{value,If} ->
-	    {reply, {ok,If}, S}
-    end;
-handle_call(interfaces, _From, S) ->
-    {reply, S#s.ifs, S};
-handle_call(applications, _From, S) ->
-    {reply, S#s.apps, S};
-handle_call({add_filter,Intf,ID,Properties}, From, S) when 
-      is_integer(Intf), is_integer(ID) ->
-    case lists:keysearch(Intf, #gsms_if.id, S#s.ifs) of
-	false ->
-	    {reply, {error, enoent}, S};
-	{value,If} ->
-	    F = #gsms_filter { id=ID, props=Properties},
-	    gen_server:cast(If#gsms_if.pid, {add_filter,From,F}),
-	    {noreply, S}
-    end;
-
-handle_call({del_filter,Intf,I}, From, S) ->
-    case lists:keysearch(Intf, #gsms_if.id, S#s.ifs) of
-	false ->
-	    {reply, {error, enoent}, S};
-	{value,If} ->
-	    gen_server:cast(If#gsms_if.pid, {del_filter,From,I}),
-	    {noreply, S}
-    end;
-
-handle_call({get_filter,Intf,I}, From, S) ->
-    case lists:keysearch(Intf, #gsms_if.id, S#s.ifs) of
-	false ->
-	    {reply, {error, enoent}, S};
-	{value,If} ->
-	    gen_server:cast(If#gsms_if.pid, {get_filter,From,I}),
-	    {noreply, S}
-    end;
-
-handle_call({list_filter,Intf}, From, S) ->
-    case lists:keysearch(Intf, #gsms_if.id, S#s.ifs) of
-	false ->
-	    {reply, {error, enoent}, S};
-	{value,If} ->
-	    gen_server:cast(If#gsms_if.pid, {list_filter,From}),
-	    {noreply,S}
-    end;
-
-handle_call(stop, _From, S) ->
-    {stop, normal, ok, S};
-
-handle_call(_Request, _From, S) ->
-    {reply, {error, bad_call}, S}.
-
-%%--------------------------------------------------------------------
-%% Function: handle_cast(Msg, State) -> {noreply, State} |
-%%                                      {noreply, State, Timeout} |
-%%                                      {stop, Reason, State}
-%% Description: Handling cast messages
-%%--------------------------------------------------------------------
-handle_cast({input,Pid,Pdu}, S) 
-  when is_pid(Pid),is_record(Pdu, gsms_submit_pdu) ->
-    S1 = S#s { stat_in = S#s.stat_in + 1 },
-    S2 = broadcast(Pid, Pdu, S1),
-    {noreply, S2};
-handle_cast({send,Pid,Pdu}, S) 
-  when is_pid(Pid),is_record(Pdu, gsms_deliver_pdu) ->
-    S1 = broadcast(Pid, Pdu, S),
-    {noreply, S1};
-handle_cast(_Msg, S) ->
-    {noreply, S}.
-
-%%--------------------------------------------------------------------
-%% Function: handle_info(Info, State) -> {noreply, State} |
-%%                                       {noreply, State, Timeout} |
-%%                                       {stop, Reason, State}
-%% Description: Handling all non call/cast messages
-%%--------------------------------------------------------------------
-handle_info({'DOWN',_Ref,process,Pid,_Reason},S) ->
-    case lists:keytake(Pid, #gsms_app.pid, S#s.apps) of
-	false ->
-	    case lists:keytake(Pid, #gsms_if.pid, S#s.ifs) of
-		false ->
-		    {noreply, S};
-		{value,_If,Ifs} ->
-		    %% FIXME: Restart?
-		    {noreply,S#s { ifs = Ifs }}
-	    end;
-	{value,_App,Apps} ->
-	    %% FIXME: Restart?
-	    {noreply,S#s { apps = Apps }}
-    end;
-handle_info({'EXIT', Pid, Reason}, S) ->
-    case lists:keytake(Pid, #gsms_if.pid, S#s.ifs) of
-	{value,_If,Ifs} ->
-	    %% One of our interfaces died, log and ignore
-	    lager:debug("gsms_router: interface ~p died, reason ~p\n", [_If, Reason]),
-	    {noreply,S#s { ifs = Ifs }};
-	false ->
-	    %% Someone else died, log and terminate
-	    lager:debug("gsms_router: linked process ~p died, reason ~p, terminating\n", 
-		 [Pid, Reason]),
-	    {stop, Reason, S}
-    end;
-handle_info(_Info, S) ->
-    {noreply, S}.
-
-%%--------------------------------------------------------------------
-%% Function: terminate(Reason, State) -> void()
-%% Description: This function is called by a gen_server when it is about to
-%% terminate. It should be the opposite of Module:init/1 and do any necessary
-%% cleaning up. When it returns, the gen_server terminates with Reason.
-%% The return value is ignored.
-%%--------------------------------------------------------------------
-terminate(_Reason, _S) ->
+%%
+%% Called from gsms_srv backend to enter incoming message
+%%
+input_from(BNumber, Sms) ->
+    lager:debug("message input modem:~s, message = ~p\n",
+		[BNumber, Sms]),
+    ?SERVER ! {input_from, BNumber, Sms},
     ok.
 
 %%--------------------------------------------------------------------
-%% Func: code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% Description: Convert process state when code is changed
+%% @doc
+%% Starts the server
+%%
+%% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
+%% @end
 %%--------------------------------------------------------------------
-code_change(_OldVsn, S, _Extra) ->
-    {ok, S}.
+start_link(Args) ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
+
+%%%===================================================================
+%%% gen_server callbacks
+%%%===================================================================
 
 %%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Initializes the server
+%%
+%% @spec init(Args) -> {ok, State} |
+%%                     {ok, State, Timeout} |
+%%                     ignore |
+%%                     {stop, Reason}
+%% @end
+%%--------------------------------------------------------------------
+init(_Args) ->
+    process_flag(trap_exit, true),
+    {ok, #state{}}.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Handling call messages
+%%
+%% @spec handle_call(Request, From, State) ->
+%%                                   {reply, Reply, State} |
+%%                                   {reply, Reply, State, Timeout} |
+%%                                   {noreply, State} |
+%%                                   {noreply, State, Timeout} |
+%%                                   {stop, Reason, Reply, State} |
+%%                                   {stop, Reason, State}
+%% @end
+%%--------------------------------------------------------------------
+handle_call({send,Opts,Body}, _From, State) ->
+    %% forward to the correct interface handler
+    %% FIXME: add code to match attributes!
+    case proplists:get_value(bnumber, Opts) of
+	undefined ->
+	    case State#state.ifs of 
+		[I|_] ->
+		    Reply = gsms_srv:send(I#interface.pid, Opts, Body),
+		    {reply, Reply, State};
+		[] ->
+		    {reply, {error,enoent}, State}
+	    end;
+	BNumber ->
+	    case lists:keyfind(BNumber,#interface.bnumber,State#state.ifs) of
+		false ->
+		    {reply, {error,enoent}, State};
+		I ->
+		    Reply = gsms_srv:send(I#interface.pid, Opts, Body),
+		    {reply, Reply, State}
+	    end
+    end;
+handle_call({subscribe,Pid,Filter}, _From, State) ->
+    Ref = erlang:monitor(process, Pid),
+    Subs = [#subscription { pid = Pid,
+			    ref = Ref,
+			    filter = Filter } | State#state.subs],
+    {reply, ok, State#state { subs = Subs} };
+handle_call({unsubscribe,Ref}, _From, State) ->
+    case lists:keytake(Ref, #subscription.ref, State#state.subs) of
+	false -> 
+	    {reply, ok, State};
+	{value,_S,Subs} ->
+	    erlang:demonitor(Ref, [flush]),
+	    {reply, ok, State#state { subs = Subs} }
+    end;
+handle_call({join,Pid,BNumber,Attributes}, _From, State) ->
+    case lists:keytake(BNumber, #interface.bnumber, State#state.ifs) of
+	false ->
+	    ?debug("gsms_router: process ~p, bnumber ~p joined.",
+		   [Pid, BNumber]),
+	    State1 = add_interface(Pid,BNumber,Attributes,State),
+	    {reply, ok, State1};
+	{value,I,IFs} ->
+	    receive
+		{'EXIT', OldPid, _Reason} when I#interface.pid =:= OldPid ->
+		    ?debug("join: restart detected", []),
+		    State1 = add_interface(Pid,BNumber,Attributes,
+					   State#state { ifs=IFs} ),
+		    {reply, ok, State1}
+	    after 0 ->
+		    {reply, {error,ealready}, State}
+	    end
+    end;
+handle_call(_Request, _From, State) ->
+    Reply = ok,
+    {reply, Reply, State}.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Handling cast messages
+%%
+%% @spec handle_cast(Msg, State) -> {noreply, State} |
+%%                                  {noreply, State, Timeout} |
+%%                                  {stop, Reason, State}
+%% @end
+%%--------------------------------------------------------------------
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Handling all non call/cast messages
+%%
+%% @spec handle_info(Info, State) -> {noreply, State} |
+%%                                   {noreply, State, Timeout} |
+%%                                   {stop, Reason, State}
+%% @end
+%%--------------------------------------------------------------------
+handle_info({'DOWN',Ref,process,Pid,_Reason}, State) ->
+    case lists:keytake(Ref, #subscription.ref, State#state.subs) of
+	false -> 
+	    case lists:keytake(Pid, #interface.pid, State#state.ifs) of
+		false ->
+		    {noreply, State};
+		{value,_If,Ifs} ->
+		    ?debug("gsms_router: interface ~p died, reason ~p\n", 
+			   [_If, _Reason]),
+		    %% Restart done by gsms_if_sup
+		    {noreply,State#state { ifs = Ifs }}
+	    end;
+	{value,_S,Subs} ->
+	    {reply, ok, State#state { subs = Subs} }
+    end;
+
+handle_info({input_from, BNumber, Sms}, State) ->
+    lists:foreach(
+      fun(S) ->
+	      case match(S#subscription.filter, BNumber, Sms) of
+		  true ->
+		      S#subscription.pid ! {gsms, S#subscription.ref, Sms};
+		  false ->
+		      ok
+	      end
+      end, State#state.subs),
+    {noreply, State};
+handle_info({'EXIT', Pid, Reason}, State) ->
+    case lists:keytake(Pid, #interface.pid, State#state.ifs) of
+	{value,_If,Ifs} ->
+	    %% One of our interfaces died, log and ignore
+	    ?debug("gsms_router: interface ~p died, reason ~p\n", 
+		   [_If, Reason]),
+	    {noreply,State#state { ifs = Ifs }};
+	false ->
+	    %% Someone else died, log and terminate
+	    ?debug("gsms_router: linked process ~p died, reason ~p, terminating\n", 
+		   [Pid, Reason]),
+	    {stop, Reason, State}
+    end;
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% This function is called by a gen_server when it is about to
+%% terminate. It should be the opposite of Module:init/1 and do any
+%% necessary cleaning up. When it returns, the gen_server terminates
+%% with Reason. The return value is ignored.
+%%
+%% @spec terminate(Reason, State) -> void()
+%% @end
+%%--------------------------------------------------------------------
+terminate(_Reason, _State) ->
+    ok.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Convert process state when code is changed
+%%
+%% @spec code_change(OldVsn, State, Extra) -> {ok, NewState}
+%% @end
+%%--------------------------------------------------------------------
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+%%%===================================================================
 %%% Internal functions
-%%--------------------------------------------------------------------
+%%%===================================================================
 
-%% fs_xxx functions are normally called from backends
-%% if filter returns true then pass the message through
-%% (a bit strange, but follows the logic from lists:filter/2)
-%%
+add_interface(Pid,BNumber,Attributes,State) ->
+    Mon = erlang:monitor(process, Pid),
+    I = #interface { pid=Pid, mon=Mon,
+		     bnumber=BNumber, attributes=Attributes },
+    link(Pid),
+    State#state { ifs = [I | State#state.ifs ] }.
 
-%% create filter structure
-fs_new() ->
-    #gsms_fs {}.
 
-%% add filter to filter structure
-fs_add(F, Fs) when is_record(F, gsms_filter), is_record(Fs, gsms_fs) ->
-    I = Fs#gsms_fs.next_id,
-    Filter = Fs#gsms_fs.filter ++ [{I,F}],
-    {I, Fs#gsms_fs { filter=Filter, next_id=I+1 }}.
+match(As, BNum, Sms) when is_list(As) ->
+    match_clause(As, BNum, Sms);
+match({'not',Filter}, BNum, Sms) ->
+    not match(Filter, BNum, Sms);
+match({'and',A,B}, BNum, Sms) ->
+    match(A,BNum,Sms) andalso match(B,BNum,Sms);
+match({'or',A,B}, BNum, Sms) ->
+    match(A,BNum,Sms) orelse match(B,BNum,Sms);
+match({bnumber,Addr}, BNum, _Sms) -> 
+    %% receiving modem
+    match_addr(Addr, BNum);
+match(Match, _BNum, Sms) ->
+    match_sms(Match, Sms).
 
-fs_add(I,F,Fs) when is_integer(I), is_record(F,gsms_filter),
-		    is_record(Fs,gsms_fs) ->
-    Filter = [{I,F} | Fs#gsms_fs.filter],
-    NextId = Fs#gsms_fs.next_id,
-    Fs#gsms_fs { filter=Filter, next_id=erlang:max(I+1,NextId)}.
-
-%% remove filter from filter structure
-fs_del(F, Fs) when is_record(F, gsms_filter), is_record(Fs, gsms_fs) ->
-    case lists:keytake(F, 2, Fs#gsms_fs.filter) of
-	{value,_FI,Filter} ->
-	    {true, Fs#gsms_fs { filter=Filter }};
-	false ->
-	    {false, Fs}
+match_clause([A|As], BNum, Sms) ->
+    case match(A, BNum, Sms) of
+	true -> match_clause(As, BNum, Sms);
+	false -> false
     end;
-fs_del(I, Fs) when is_record(Fs, gsms_fs) ->
-    case lists:keytake(I, 1, Fs#gsms_fs.filter) of
-	{value,_FI,Filter} ->
-	    {true, Fs#gsms_fs { filter=Filter }};
-	false ->
-	    {false, Fs}
-    end.
+match_clause([], _BNum, _Sms) ->
+    true.
 
-fs_get(I, Fs) when is_record(Fs, gsms_fs) ->
-    case lists:keysearch(I, 1, Fs#gsms_fs.filter) of
-	{value,FI} ->
-	    {ok,FI};
-	false ->
-	    {error, enoent}
-    end.
-
-%% return the filter list [{Num,#gsms_filter{}}]
-fs_list(Fs) when is_record(Fs, gsms_fs) ->
-    {ok, Fs#gsms_fs.filter}.
-
-    
-%% filter a frame
-%% return true for no filtering (pass through)
-%% return false for filtering
-%%
-fs_input(F, Fs) when is_record(F, gsms_submit_pdu), is_record(Fs, gsms_fs) ->
-    case Fs#gsms_fs.filter of
-	[] -> true;  %% default to accept all
-	Filter -> filter_(F,Filter)
-    end.
-
-filter_(Frame, [{_I,_F}|Fs]) ->
-%%    Mask = F#gsms_filter.mask,
-%%    Cond = (Frame#gsms_frame.id band Mask) =:= (F#gsms_filter.id band Mask),
-    if
-%% ?is_not_gsms_id_inv_filter(F#gsms_filter.id), Cond ->
-%%	    true;
-%%       ?is_gsms_id_inv_filter(F#gsms_filter.id), not Cond ->
-%%	    true;
-       true ->
-	    filter_(Frame, Fs)
+match_sms({type,Type}, Sms) ->
+    case Sms#gsms_deliver_pdu.dcs of
+	[Type|_] ->  true;
+	_ -> false
     end;
-filter_(_Frame, []) ->
-    false.
+match_sms({alphabet,Alphabet}, Sms) ->
+    case Sms#gsms_deliver_pdu.dcs of
+	[_Type,_Compress,Alphabet|_] -> true;
+	_ -> false
+    end;
+match_sms({class,Class}, Sms) ->
+    case Sms#gsms_deliver_pdu.dcs of
+	[_Type,_Compress,_Alphabet,Class|_] -> true;
+	_ -> false
+    end;
+match_sms({pid,Pid}, Sms) ->
+    Sms#gsms_deliver_pdu.pid =:= Pid;
+match_sms({dst,Port}, Sms) ->
+    case lists:keyfind(1, port, Sms#gsms_deliver_pdu.udh) of
+	{port,Port,_} -> true;
+	_ -> false
+    end;
+match_sms({src,Port}, Sms) ->
+    case lists:keyfind(1, port, Sms#gsms_deliver_pdu.udh) of
+	{port,_,Port} -> true;
+	_ -> false
+    end;
+match_sms({anumber,Addr}, Sms) ->
+    match_addr(Addr, Sms#gsms_deliver_pdu.addr);
+match_sms({smsc,Addr}, Sms) ->
+    match_addr(Addr, Sms#gsms_deliver_pdu.smsc).
 
-%% Error frame handling
-error(_Sender, _Frame, S) ->
-    lager:debug("gsms_router: error frame = ~p\n", [_Frame]),
-    %% FIXME: send to error handler
-    S1 = S#s { stat_err = S#s.stat_err + 1 },
-    S1.
-
-%% Broadcast a message to applications/simulated can buses
-%% and joined CAN interfaces
-%% 
-broadcast(Sender,Frame,S) ->
-    Sent0 = broadcast_apps(Sender, Frame, S#s.apps, 0),
-    Sent  = broadcast_ifs(Frame, S#s.ifs, Sent0),
-    lager:debug("sms_router:broadcast: frame=~p, send=~w\n", [Frame, Sent]),
-    if Sent > 0 ->
-	    S#s { stat_out = S#s.stat_out + 1 };
-       true ->
-	    S
-    end.
-
-
-%% send to all applications, except sender application
-broadcast_apps(Sender, Frame, [A|As], Sent) when A#gsms_app.pid =/= Sender ->
-    A#gsms_app.pid ! Frame,
-    broadcast_apps(Sender, Frame, As, Sent+1);
-broadcast_apps(Sender, Frame, [_|As], Sent) ->
-    broadcast_apps(Sender, Frame, As, Sent);
-broadcast_apps(_Sender, _Frame, [], Sent) ->
-    Sent.
-
-%% send to all interfaces, except the origin interface
-broadcast_ifs(Frame, [I|Is], Sent) ->
-    gen_server:cast(I#gsms_if.pid, {send, Frame}),
-    broadcast_ifs(Frame, Is, Sent+1);
-%% broadcast_ifs(Frame, [_|Is], Sent) ->
-%%    broadcast_ifs(Frame, Is, Sent);
-broadcast_ifs(_Frame, [], Sent) ->
-    Sent.
-    
+%% Add some more smart matching here to select international / national
+%% country suffix etc.
+match_addr(Addr, Addr) -> true;
+match_addr(Addr, #gsms_addr { addr = Addr }) when is_list(Addr) -> true;
+match_addr(#gsms_addr { type=unknown, addr=Addr},
+	   #gsms_addr { addr=Addr}) -> true;
+match_addr(_, _) -> false.

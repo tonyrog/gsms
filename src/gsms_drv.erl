@@ -36,7 +36,6 @@
 	 subscribe/1,
 	 subscribe/2,
 	 unsubscribe/2,
-	 debug/2,
 	 setopts/2,
 	 at/2, ats/2, atd/2]).
 
@@ -94,13 +93,12 @@
 -define(ESC,    16#1B).
 
 %% For dialyzer
--type gsms_option() :: device | reopen_timeout | reply_timeout | debug.
+-type gsms_option() :: device | reopen_timeout | reply_timeout.
 
 -type gsms_options()::{device, string()} |
 		      {reopen_timeout, timeout()} |
 		      {reply_timeout, timeout()} |
-		      {smsc, string()} | 
-		      {debug, boolean()}.
+		      {smsc, string()}.
 
 -type driver() :: pid() | atom().
 
@@ -124,8 +122,7 @@
 	  queue,          %% request queue
 	  reply_timer,    %% timeout waiting for reply
 	  reopen_timer,   %% timer ref
-	  subs = [],      %% #subscription{}
-	  trace           %% debug tracing
+	  subs = []       %% #subscription{}
 	}).
 
 %%%===================================================================
@@ -136,10 +133,11 @@
 
 options() ->
     uart:options() ++
-	[smsc,
+	[
+	 smsc,
 	 reopen_timeout,
-	 reply_timeout,
-	 debug].
+	 reply_timeout
+	].
 
 -spec reset(Drv::driver()) -> ok.
 
@@ -256,7 +254,7 @@ read_message(Drv,I) when is_integer(I), I>=0 ->
 	ok ->
 	    {error, no_such_index};
 	{ok,["+CMGR: "++_StatStoreLen,HexPdu]} ->
-	    {ok,gsms:decode_in_hex(HexPdu)};
+	    {ok,gsms_codec:decode_in_hex(HexPdu)};
 	{error, Error} ->
 	    {error, cms_error(Error)}
     end.
@@ -267,29 +265,29 @@ read_all_messages(Drv) ->
 send_message(Drv,Opts,Body) ->
     lists:foreach(
       fun(Pdu) ->
-	      gsms:dump_yang(Pdu),
-	      Bin = gsms:encode_sms(Pdu),
-	      Hex = gsms:binary_to_hex(Bin),
+	      gsms_codec:dump_yang(Pdu),
+	      Bin = gsms_codec:encode_sms(Pdu),
+	      Hex = gsms_codec:binary_to_hex(Bin),
 	      Len = (length(Hex)-2) div 2,
 	      case ats(Drv,"+CMGS="++integer_to_list(Len)) of
 		  ready_to_send -> atd(Drv,Hex);
 		  Error -> Error
 	      end
-      end, gsms:make_sms_submit(Opts, Body)).
+      end, gsms_codec:make_sms_submit(Opts, Body)).
 
 
 write_message(Drv,Opts,Body) ->
     lists:foreach(
       fun(Pdu) ->
-	      gsms:dump_yang(Pdu),
-	      Bin = gsms:encode_sms(Pdu),
-	      Hex = gsms:binary_to_hex(Bin),
+	      gsms_codec:dump_yang(Pdu),
+	      Bin = gsms_codec:encode_sms(Pdu),
+	      Hex = gsms_codec:binary_to_hex(Bin),
 	      Len = (length(Hex)-2) div 2,
 	      case ats(Drv,"+CMGW="++integer_to_list(Len)) of
 		  ready_to_send -> atd(Drv,Hex);
 		  Error -> Error
 	      end
-      end, gsms:make_sms_submit(Opts, Body)).
+      end, gsms_codec:make_sms_submit(Opts, Body)).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -298,7 +296,6 @@ write_message(Drv,Opts,Body) ->
 %% Device contains the path to the Device. <br/>
 %% reopen_timeout =/= 0 means that if the driver fails to open the device it
 %% will try again in Timeout milliseconds.<br/>
-%% Debug controls trace output.<br/>
 %%
 %% @end
 %%--------------------------------------------------------------------
@@ -313,13 +310,7 @@ write_message(Drv,Opts,Body) ->
 %%
 start_link(Opts) ->
     lager:info("~p: start_link: args = ~p\n", [?MODULE, Opts]),
-    case proplists:get_value(name, Opts) of
-	undefined ->
-	    gen_server:start_link(?MODULE, Opts, []);
-	Name when is_atom(Name) ->
-	    Opts1 = proplists:delete(name, Opts),
-	    gen_server:start_link({local,Name},?MODULE, Opts1, [])
-    end.
+    gen_server:start_link(?MODULE, Opts, []).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -332,6 +323,18 @@ start_link(Opts) ->
 stop(Drv) ->
     gen_server:call(Drv, stop).
 
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Subscribe to sms events.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec subscribe(Drv::pid()) -> {ok,reference()} | {error, Error::term()}.
+
+subscribe(Drv) ->
+    subscribe(Drv, []).
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Subscribe to sms events.
@@ -343,17 +346,6 @@ stop(Drv) ->
 subscribe(Drv,Pattern) ->
     gen_server:call(Drv, {subscribe,self(),Pattern}).
 
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Subscribe to sms events.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec subscribe(Drv::pid()) -> {ok,reference()} | {error, Error::term()}.
-subscribe(Drv) ->
-    gen_server:call(Drv, {subscribe,self(),[]}).
-
 %%--------------------------------------------------------------------
 %% @doc
 %% Unsubscribe from sms events.
@@ -363,16 +355,6 @@ subscribe(Drv) ->
 -spec unsubscribe(Drv::pid(),Ref::reference()) -> ok | {error, Error::term()}.
 unsubscribe(Drv,Ref) ->
     gen_server:call(Drv, {unsubscribe,Ref}).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Enable debug trace of the gsms_drv module
-%%
-%% @end
-%%--------------------------------------------------------------------
-
-debug(Drv,On) when is_boolean(On) ->
-    gen_server:call(Drv, {debug, On}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -421,9 +403,8 @@ atd(Drv, Hex) ->
 		  {stop, Reason::term()}.
 
 init(Opts) ->
-    lager:start(),  %% set dependency
-    {ok,Trace} = set_trace(proplists:get_bool(debug, Opts), undefined),
-    lager:info("~p: init: args = ~p,\n pid = ~p\n", [?MODULE, Opts, self()]),
+    lager:info("~p: init: args = ~p,\n pid = ~p\n", 
+	       [?MODULE, Opts, self()]),
     Opts1 = normalise_opts(?UART_DEFAULT_OPTS ++ Opts),
     {Uopts0,Opts2} = split_opts(Opts1, uart:options()),
     {Gopts0,Opts3} = split_opts(Opts2, options()),
@@ -441,8 +422,8 @@ init(Opts) ->
 	    S = #ctx { device = Device, 
 		       uopts  = Uopts1,
 		       opts   = Gopts0,
-		       queue  = queue:new(),
-		       trace  = Trace },
+		       queue  = queue:new()
+		     },
 	    case open(S) of
 		{ok, S1} -> {ok, S1};
 		Error -> {stop, Error}
@@ -451,58 +432,6 @@ init(Opts) ->
 	    {stop, Error}
     end.
 
-check_options(Uopts,Gopts,[]) ->
-    case uart:validate_opts(Uopts) of
-	ok -> validate_opts(Gopts);
-	Error -> Error
-    end;
-check_options(_Uopt,_Gopts,Opts) ->
-    {error, {unknown_opts,Opts}}.
-
-	    
-open(Ctx=#ctx {device = ""}) ->
-    lager:debug("open: simulated\n", []),
-    {ok, Ctx#ctx { uart=simulated }};
-
-open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
-    case uart:open(Name,UOpts) of
-	{ok,U} ->
-	    lager:debug("open: ~s [~w]: ~p", [Name,UOpts,U]),
-	    %% waky, waky ? do not echo
-	    uart:send(U, [?ESC,       %% escape if stuck in message send
-			  "AT\r\n",   %% empty
-			  "AT\r\n",   %% epty
-			  "ATZ\r\n",  %% reset
-			  "ATE0\r\n", %% echo off
-			  "AT\r\n"
-			 ]),
-	    flush_uart(U),
-	    {ok, Ctx#ctx { uart=U }};
-	{error, E} when E == eaccess;
-			E == enoent ->
-	    case proplists:get_value(reopen_timeout, Ctx#ctx.opts,infinity) of
-		infinity ->
-		    lager:debug("open: Driver not started, reason = ~p.\n",[E]),
-		    {error, E};
-		Ival ->
-		    lager:debug("open: uart could not be opened, will try again"
-				" in ~p millisecs.\n", [Ival]),
-		    Reopen_timer = erlang:start_timer(Ival, self(), reopen),
-		    {ok, Ctx#ctx { reopen_timer = Reopen_timer }}
-	    end;
-	    
-	Error ->
-	    lager:debug("open: Driver not started, reason = ~p.\n", 
-		 [Error]),
-	    Error
-    end.
-
-close(Ctx=#ctx {uart = U}) when is_port(U) ->
-    lager:debug("close: ~p", [U]),
-    uart:close(U),
-    {ok, Ctx#ctx { uart=undefined }};
-close(Ctx) ->
-    {ok, Ctx}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -559,13 +488,6 @@ handle_call({unsubscribe,Ref},_From,Ctx) ->
     erlang:demonitor(Ref),
     Ctx1 = remove_subscription(Ref,Ctx),
     {reply, ok, Ctx1};
-handle_call({debug, On}, _From, Ctx) ->
-    case set_trace(On, Ctx#ctx.trace) of
-	{ok,Trace} ->
-	    {reply, ok, Ctx#ctx { trace = Trace }};
-	Error ->
-	    {reply, Error, Ctx}
-    end;
 handle_call(stop, _From, Ctx) ->
     {stop, normal, ok, Ctx};
 %% other commands we queue if gsms_drv is busy processing command
@@ -740,6 +662,9 @@ handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
 	"+CDS:"++EventData -> %% SMS status report
 	    Ctx1 = event_notify(trimhd(EventData), Ctx),
 	    {noreply, Ctx1};
+	"^"++_Status -> %% Periodic information
+	    %% maybe match subscriptions? 
+	    {noreply,Ctx};	    
 	Reply ->
 	    if Ctx#ctx.client =/= undefined ->
 		    lager:debug("handle_info: data ~p", [Reply]),
@@ -797,7 +722,6 @@ handle_info(_Info, Ctx) ->
 		       ok.
 
 terminate(_Reason, Ctx) ->
-    stop_trace(Ctx#ctx.trace),
     close(Ctx),
     ok.
 
@@ -818,25 +742,64 @@ code_change(_OldVsn, Ctx, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-stop_trace(undefined) ->
-    undefined;
-stop_trace(Trace) ->
-    lager:stop_trace(Trace),
-    undefined.
+check_options(Uopts,Gopts,[]) ->
+    case uart:validate_opts(Uopts) of
+	ok -> validate_opts(Gopts);
+	Error -> Error
+    end;
+check_options(_Uopt,_Gopts,Opts) ->
+    {error, {unknown_opts,Opts}}.
 
-%% enable/disable module debug trace
-set_trace(false, Trace) ->
-    Trace1 = stop_trace(Trace),
-    lager:set_loglevel(lager_console_backend, info),
-    {ok,Trace1};
-set_trace(true, undefined) ->
-    lager:trace_console([{module,?MODULE}], debug);
-set_trace(true, Trace) -> 
-    {ok,Trace}.
+	    
+open(Ctx=#ctx {device = ""}) ->
+    lager:debug("open: simulated\n", []),
+    {ok, Ctx#ctx { uart=simulated }};
+
+open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
+    case uart:open(Name,UOpts) of
+	{ok,U} ->
+	    lager:debug("open: ~s [~w]: ~p", [Name,UOpts,U]),
+	    flush_uart(U),
+	    lager:debug("sync start"),
+	    %% waky, waky ? do not echo
+	    uart:send(U, [?ESC]),      %% escape if stuck in message send
+	    uart:send(U, "ATZ\r\n"),   %% reset 
+	    uart:send(U, "ATE0\r\n"),  %% echo off
+	    uart:send(U, "AT\r\n"),   %% empty
+	    uart:send(U, "AT\r\n"),   %% empty
+	    flush_uart(U),
+	    lager:debug("sync stop"),
+	    {ok, Ctx#ctx { uart=U }};
+	{error, E} when E == eaccess;
+			E == enoent ->
+	    case proplists:get_value(reopen_timeout, Ctx#ctx.opts,infinity) of
+		infinity ->
+		    lager:debug("open: Driver not started, reason = ~p.\n",[E]),
+		    {error, E};
+		Ival ->
+		    lager:debug("open: uart could not be opened, will try again"
+				" in ~p millisecs.\n", [Ival]),
+		    Reopen_timer = erlang:start_timer(Ival, self(), reopen),
+		    {ok, Ctx#ctx { reopen_timer = Reopen_timer }}
+	    end;
+	    
+	Error ->
+	    lager:debug("open: Driver not started, reason = ~p.\n", 
+		 [Error]),
+	    Error
+    end.
+
+close(Ctx=#ctx {uart = U}) when is_port(U) ->
+    lager:debug("close: ~p", [U]),
+    uart:close(U),
+    {ok, Ctx#ctx { uart=undefined }};
+close(Ctx) ->
+    {ok, Ctx}.
+
 
 %% flush uart data messages
 flush_uart(U) ->
-    flush_uart(U, 250, 50).
+    flush_uart(U, 1000, 250).
 
 flush_uart(U,T0,T1) ->
     receive
@@ -932,14 +895,13 @@ event_notify(String, Ctx) ->
 		Items ->
 		    [{"items", Items}]
 	    end,
+    lager:debug("Event: ~p", [Event]),
     send_event(Ctx#ctx.subs, Event),
-    %% send to event listener(s)
-    io:format("Event: ~p\n", [Event]),
     Ctx.
 
 send_event([#subscription{pid=Pid,mon=Ref,pattern=Pattern}|Tail], Event) ->
     case match_event(Pattern, Event) of
-	true -> Pid ! {tellstick_event,Ref,Event};
+	true -> Pid ! {gsms_event,Ref,Event};
 	false -> false
     end,
     send_event(Tail,Event);
@@ -995,7 +957,6 @@ validate_opt(device, Arg) -> is_list(Arg);
 validate_opt(reopen_timeout, Arg) -> is_timeout(Arg);
 validate_opt(reply_timeout, Arg) -> is_timeout(Arg);
 validate_opt(smsc, Arg) -> is_list(Arg);
-validate_opt(debug, Arg) -> is_boolean(Arg);
 validate_opt(_,_Arg) -> undefined.
 
 is_timeout(T) ->

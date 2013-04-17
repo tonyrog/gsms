@@ -9,12 +9,6 @@
 -ifndef(__GSMS_HRL__).
 -define(__GSMS_HRL__, true).
 
--record(gsms_filter,
-	{
-	  id,
-	  props = []
-	}).
-
 -record(gsms_addr,
 	{
 	  type = unknown,
@@ -57,7 +51,7 @@
 	  res2=0,           %% 0:1
 	  mms=false,        %% :1 more messages to send
 	  addr,             %% :: #gsms_addr{}
-	  pid=?DEFAULT_PID, %% protocol identifire
+	  pid=?DEFAULT_PID, %% protocol identifier
 	  dcs=?DEFAULT_DCS, %% data coding scheme
 	  scts,             %% :7/binary
 	  udh=[] :: [ie()], %% user data header

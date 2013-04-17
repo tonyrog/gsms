@@ -2,10 +2,8 @@
  [
   {description, "ETSI 03.40 Sender & Reciver"},
   {vsn, git},
-  {registered, []},
-  {applications, [
-                  kernel,
-                  stdlib
-                 ]},
-  {env, []}
+  {registered, [gsms_router]},
+  {mod, {gsms_app,[]}},
+  {env, []},
+  {applications, [kernel,stdlib,uart]}
  ]}.
