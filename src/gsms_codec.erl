@@ -92,12 +92,13 @@ decode_out(<<L1,SmscAddr:L1/binary,
       }.
 
 %% return a list of pdu's
-%-spec make_sms_submit(Opts::[opts()],Body::string()) -> {dcs(), [pdu()]}.
+-spec make_sms_submit(Opts::[gsms_pdu_option()],
+		      Message::[integer()]) -> [#gsms_submit_pdu{}].
 			       
-make_sms_submit(Opts,Body) ->
+make_sms_submit(Opts,Message) ->
     Pdu = set_pdu_opts(Opts,#gsms_submit_pdu{}),
     Ref = proplists:get_value(ref, Opts, 1),
-    {Dcs,UDList} = encode_ud(Pdu#gsms_submit_pdu.dcs, Body,
+    {Dcs,UDList} = encode_ud(Pdu#gsms_submit_pdu.dcs, Message,
 			      Pdu#gsms_submit_pdu.udh, Ref),
     lists:map(
       fun({Udl,Ud,Udhi0}) ->
@@ -105,6 +106,9 @@ make_sms_submit(Opts,Body) ->
 	      Pdu#gsms_submit_pdu { dcs=Dcs, udl=Udl, ud=Ud, udhi=Udhi }
       end, UDList).
 
+-spec set_pdu_opts(Opts::[gsms_pdu_option()], Pdu::#gsms_submit_pdu{}) ->
+			  Pdu::#gsms_submit_pdu{}.
+			  
 set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
     case Key of
 	smsc when is_record(Value,gsms_addr) ->
@@ -127,8 +131,10 @@ set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { srr=Value });
 	mref when ?is_byte(Value) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { mref=Value });
-	vpf ->
+	vpf when is_atom(Value) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { vpf=Value });
+	vp ->
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { vp=Value });
 	addr when is_record(Value,gsms_addr) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { addr=Value });
 	addr when is_list(Value),hd(Value)=:=$+ ->
@@ -137,30 +143,45 @@ set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
 	addr when is_list(Value) ->
 	    Addr = #gsms_addr { type=unknown, addr=Value },
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { addr=Addr});
-	pid ->
+	pid when ?is_byte(Value) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { pid=Value });
-	dcs ->
-	    if is_integer(Value) ->
-		    Dcs1 = try decode_dcs(Value) of
-			       Dcs0 -> Dcs0
-			   catch
-			       error:_ -> Value
-			   end,
-		    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
-	       true ->
-		    encode_dcs(Value),
-		    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Value })
-	    end;
-	vp ->
-	    set_pdu_opts(Kvs, R#gsms_submit_pdu { vp=Value });
-	ref when is_integer(Value) ->
-	    %% ignore this option, used elsewhere
+	dcs when is_record(Value,gsms_dcs) ->
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Value });
+	dcs when is_integer(Value) ->
+	    Dcs = decode_dcs(Value),
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs });
+	type ->
+	    Dcs = R#gsms_submit_pdu.dcs,
+	    Dcs1 = Dcs#gsms_dcs { type = Value },
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
+	class ->
+	    Dcs = R#gsms_submit_pdu.dcs,
+	    Dcs1 = Dcs#gsms_dcs { class = Value },
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
+	alphabet ->
+	    Dcs = R#gsms_submit_pdu.dcs,
+	    Dcs1 = Dcs#gsms_dcs { alphabet = Value },
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
+	compression ->
+	    Dcs = R#gsms_submit_pdu.dcs,
+	    Dcs1 = Dcs#gsms_dcs { compression = Value },
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
+	store ->
+	    Dcs = R#gsms_submit_pdu.dcs,
+	    Dcs1 = Dcs#gsms_dcs { store = Value },
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
+	wait_type ->
+	    Dcs = R#gsms_submit_pdu.dcs,
+	    Dcs1 = Dcs#gsms_dcs { wait_type = Value },
+	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
+	%% recognized options, but not for pdu
+	notify ->
+	    set_pdu_opts(Kvs, R);	    
+	ref ->
 	    set_pdu_opts(Kvs, R)
-
     end;
 set_pdu_opts([], R) ->
     R.
-
 
 encode_sms(R=#gsms_submit_pdu{}) ->
     SmscAddr = encode_smsc_addr(R#gsms_submit_pdu.smsc),
@@ -359,22 +380,23 @@ encode_scts({{{Year0,Mon,Day},{Hour,Min,Sec}},TzH}) ->
 
 decode_dcs(V) ->
     if (V bsr 6) =:= 2#00 -> %% 00xxxxxx
-	    [message] ++
-		if V band 2#00100000 =:= 0 -> [uncompressed];
-		   true -> [compressed]
-		end ++
-		case V band 2#1100 of
-		    2#0000 -> [default];
-		    2#0100 -> [octet];
-		    2#1000 -> [ucs2];
-		    2#1100 -> [reserved]
-		end ++
-		case V band 2#11 of
-		    2#00 -> [alert];
-		    2#01 -> [me];
-		    2#10 -> [sim];
-		    2#11 -> [te]
-		end;
+	    #gsms_dcs { type=message,
+			compression = if V band 2#00100000 =:= 0 -> 
+					      uncompressed;
+					 true -> compressed
+				      end,
+			alphabet = case V band 2#1100 of
+				       2#0000 -> default;
+				       2#0100 -> octet;
+				       2#1000 -> ucs2;
+				       2#1100 -> reserved
+				   end,
+			class = case V band 2#11 of
+				    2#00 -> alert;
+				    2#01 -> me;
+				    2#10 -> sim;
+				    2#11 -> te
+				end };
        (V bsr 4) =:= 2#1100 -> %% message waiting, discard
 	    dcs_message_waiting(V,discard,default);
        (V bsr 4) =:= 2#1101 -> %% message waiting, store
@@ -382,30 +404,42 @@ decode_dcs(V) ->
        (V bsr 4) =:= 2#1110 -> %% message waiting, store
 	    dcs_message_waiting(V,store,ucs2);
        (V bsr 4) =:= 2#1111 ->
-	    [data,uncompressed] ++
-	    if V band 2#0100 =:= 0 -> [octet];
-	       true -> [default]
-	    end ++
-	    case V band 2#11 of
-		2#00 -> [alert];
-		2#01 -> [me];
-		2#10 -> [sim];
-		2#11 -> [te]
-	    end;
-       true -> V
+	    #gsms_dcs { type=data,compression=uncompressed,
+			alphabet=if V band 2#0100 =:= 0 -> octet;
+				    true -> default
+				 end,
+			class = case V band 2#11 of
+				    2#00 -> alert;
+				    2#01 -> me;
+				    2#10 -> sim;
+				    2#11 -> te
+				end
+			};
+       true -> 
+	    lager:error("unknown dcs value ~p", [V]),
+	    #gsms_dcs {}
     end.
 	    
 dcs_message_waiting(V,Store,Alphabet) ->
-    [message_waiting,uncompressed,Alphabet,Store]++
-    if V band 2#0100 =:= 0 -> [inactive]; true -> [active] end ++
-    case V band 2#11 of
-	2#00 -> [voicemail];
-	2#01 -> [fax];
-	2#10 -> [email];
-	2#11 -> [other]
-    end.
+    #gsms_dcs {type=message_waiting,
+	       compression=uncompressed,
+	       alphabet=Alphabet,
+	       store=Store,
+	       active=if V band 2#0100 =:= 0 ->
+			      inactive;
+			 true -> active
+		      end,
+	       wait_type = case V band 2#11 of
+			       2#00 -> voicemail;
+			       2#01 -> fax;
+			       2#10 -> email;
+			       2#11 -> other
+			   end
+	      }.
 
-encode_dcs([message,Comp,Alpha,Class]) ->
+
+encode_dcs(#gsms_dcs{type=message,compression=Comp,
+		     alphabet=Alpha,class=Class}) ->
     2#00000000 +
 	if Comp =:= compressed -> 2#00100000;
 	   true -> 2#00000000
@@ -422,7 +456,9 @@ encode_dcs([message,Comp,Alpha,Class]) ->
 	    sim   -> 2#10;
 	    te    -> 2#11
 	end;
-encode_dcs([message_waiting,uncompressed,Alphabet,Store,Active,Type]) ->
+encode_dcs(#gsms_dcs {type=message_waiting,compression=uncompressed,
+		      alphabet=Alphabet,store=Store,active=Active,
+		      wait_type=WaitType}) ->
     if Alphabet =:= ucs2, Store =:= store ->
 	    2#11110000;
        Alphabet =:= default, Store =:= store ->
@@ -433,13 +469,14 @@ encode_dcs([message_waiting,uncompressed,Alphabet,Store,Active,Type]) ->
 	if Active =:= active -> 2#0100;
 	   true -> 2#0000
 	end +
-	case Type of
+	case WaitType of
 	    voicemail -> 2#00;
 	    fax -> 2#01;
 	    email -> 2#10;
 	    other -> 2#11
 	end;
-encode_dcs([data,uncompressed,Alphabet,Class]) ->
+encode_dcs(#gsms_dcs{type=data,compression=uncompressed,
+		     alphabet=Alphabet,class=Class}) ->
     2#11110000 +
 	if Alphabet =:= octet -> 2#100;
 	   true -> 2#000
@@ -449,15 +486,16 @@ encode_dcs([data,uncompressed,Alphabet,Class]) ->
 	    me    -> 2#01;
 	    sim   -> 2#10;
 	    te    -> 2#11
-	end;
-encode_dcs(V) when is_integer(V) ->
-    V.
+	end.
+
 		   
-decode_ud([_Msg,uncompressed,default|_], 0, UDL, Data) ->
+decode_ud(#gsms_dcs{compression=uncompressed,alphabet=default},
+	  0, UDL, Data) ->
     L7 = UDL,                  %% number of septets
     <<Gsm8:L7/binary,_/binary>> = decode_gsm7(Data),
     {[],gsms_0338:decode(Gsm8)};
-decode_ud([_Msg,uncompressed,default|_], 1, UDL, Data = <<UDHL,_/binary>>) ->
+decode_ud(#gsms_dcs{compression=uncompressed,alphabet=default},
+	  1, UDL, Data = <<UDHL,_/binary>>) ->
     %% UDHL as number of septets and including it self
     UDHL7  = ((UDHL+1)*8 + 6) div 7,
     L7 = UDL-UDHL7,  %% number of septets in message
@@ -465,19 +503,22 @@ decode_ud([_Msg,uncompressed,default|_], 1, UDL, Data = <<UDHL,_/binary>>) ->
     <<_,UDHBin:UDHL/binary,_/binary>> = Data,
     UDH = decode_udh(UDHBin),
     {UDH,gsms_0338:decode(Gsm8)};
-decode_ud([_Msg,uncompressed,ucs2|_],0,_UDL,Data) ->
+decode_ud(#gsms_dcs{compression=uncompressed,alphabet=ucs2},
+	  0,_UDL,Data) ->
     %% FIXME: pad?
     Ucs = [ U || <<U:16/big>> <= Data ],
     {[],Ucs};
-decode_ud([_Msg,uncompressed,octet|_], 0,_UDL,Data) ->
+decode_ud(#gsms_dcs{compression=uncompressed,alphabet=octet},
+	  0,_UDL,Data) ->
     Octets = [ U || <<U:8>> <= Data ],
     {[],Octets}.
 
-encode_ud([Msg,Comp,Alpha|Dcs0], Message, UDH, Ref) ->
+encode_ud(Dcs0=#gsms_dcs{alphabet=Alpha0},
+	  Message, UDH, Ref) ->
     %% fixme: check that there are no concat header ?
     %% calculate total number of letters in message and the encoding
-    {Alpha1,_TotLen} = message_len(Message,Alpha),
-    Dcs = [Msg,Comp,Alpha1|Dcs0],
+    {Alpha,_TotLen} = message_len(Message,Alpha0),
+    Dcs = Dcs0#gsms_dcs{alphabet=Alpha},
     case encode_ud_(Dcs, Message, UDH) of
 	{UDL,UD,[],UDHI} ->
 	    {Dcs, [{UDL,iolist_to_binary(UD),UDHI}]};
@@ -510,7 +551,8 @@ ud_patch([], _N, Acc) ->
     Acc.
 
 
-encode_ud_([_Msg,uncompressed,default|_], Message, UDH) ->
+encode_ud_(#gsms_dcs{compression=uncompressed,alphabet=default},
+	   Message, UDH) ->
     case len_udh(UDH) of
 	0 ->
 	    {Gsm8,Message1} = gsms_0338:encode(Message,?MAX_7BIT_LEN),
@@ -531,7 +573,7 @@ encode_ud_([_Msg,uncompressed,default|_], Message, UDH) ->
 	    <<_,_:UDHL/binary,Gsm7:L8/binary,_/binary>> = encode_gsm7(Gsm8),
 	    {UDHL7+L7,[UDHL,UDHData,Gsm7],Message1,true}
     end;
-encode_ud_([_Msg,uncompressed,ucs2|_], Message, UDH) ->
+encode_ud_(#gsms_dcs{compression=uncompressed,alphabet=ucs2}, Message, UDH) ->
     case len_udh(UDH) of
 	0 ->
 	    {Ucs2,Message1} = encode_ucs2(Message,?MAX_16BIT_LEN,[]),
@@ -545,7 +587,7 @@ encode_ud_([_Msg,uncompressed,ucs2|_], Message, UDH) ->
 	    Ucs21 = prepend(UDHL band 1,0,Ucs2),
 	    {UDHL16+N,[UDHL,UDHData,Ucs21],Message1,true}
     end;
-encode_ud_([_Msg,uncompressed,octet|_], Message, UDH) ->
+encode_ud_(#gsms_dcs{compression=uncompressed,alphabet=octet}, Message, UDH) ->
     case len_udh(UDH) of
 	0 ->
 	    {Octets,Message1} = encode_octets(Message,?MAX_8BIT_LEN,[]),
@@ -625,7 +667,7 @@ message_len_ucs2_([], Len) ->
 %%
 %% Calculate number of bytes in UDH (not incuding the length byte)
 %%
--spec len_udh(IEs::[ie()]) -> integer().
+-spec len_udh(IEs::[gsms_ie()]) -> integer().
 
 len_udh([]) ->
     0;
@@ -653,7 +695,7 @@ len_udh([], Len) -> Len.
 %%
 %% Encode user data header IEs 
 %%
--spec encode_udh(IEs::[ie()]) -> [binary()].
+-spec encode_udh(IEs::[gsms_ie()]) -> [binary()].
 
 encode_udh([]) ->
     [];

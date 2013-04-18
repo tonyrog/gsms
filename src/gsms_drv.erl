@@ -113,6 +113,7 @@
 	{
 	  uart,           %% serial port descriptor
 	  device,         %% device string
+	  caller,         %% parent pid
 	  uopts=[],       %% uart options
  	  opts=[],        %% sms options
 	  command="",     %% last command
@@ -310,7 +311,7 @@ write_message(Drv,Opts,Body) ->
 %%
 start_link(Opts) ->
     lager:info("~p: start_link: args = ~p\n", [?MODULE, Opts]),
-    gen_server:start_link(?MODULE, Opts, []).
+    gen_server:start_link(?MODULE, [self(),Opts], []).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -402,7 +403,7 @@ atd(Drv, Hex) ->
 		  ignore |
 		  {stop, Reason::term()}.
 
-init(Opts) ->
+init([Caller,Opts]) ->
     lager:info("~p: init: args = ~p,\n pid = ~p\n", 
 	       [?MODULE, Opts, self()]),
     Opts1 = normalise_opts(?UART_DEFAULT_OPTS ++ Opts),
@@ -421,6 +422,7 @@ init(Opts) ->
 		     end,
 	    S = #ctx { device = Device, 
 		       uopts  = Uopts1,
+		       caller = Caller,
 		       opts   = Gopts0,
 		       queue  = queue:new()
 		     },
@@ -769,10 +771,12 @@ open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
 	    uart:send(U, "AT\r\n"),   %% empty
 	    flush_uart(U),
 	    lager:debug("sync stop"),
+	    %% signal that the the uart device is up running
+	    Ctx#ctx.caller ! {gsms_drv, self(), up},
 	    {ok, Ctx#ctx { uart=U }};
 	{error, E} when E == eaccess;
 			E == enoent ->
-	    case proplists:get_value(reopen_timeout, Ctx#ctx.opts,infinity) of
+	    case proplists:get_value(reopen_timeout,Ctx#ctx.opts,infinity) of
 		infinity ->
 		    lager:debug("open: Driver not started, reason = ~p.\n",[E]),
 		    {error, E};

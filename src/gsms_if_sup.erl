@@ -65,7 +65,7 @@ init(Args) ->
 	lists:foldr(
 	  fun({Mod,I,Opts},Acc) ->
 		  Spec={{Mod,I},
-			{Mod, start_link, [Opts]},
+			{Mod, start_link, [I,Opts]},
 			permanent, 5000, worker, [Mod]},
 		  [Spec | Acc]
 	  end, [], 

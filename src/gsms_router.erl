@@ -37,19 +37,17 @@
 
 -define(SERVER, ?MODULE). 
 
--type addr() :: #gsms_addr{} | string().
-
 -type filter() :: 
 	[filter()] |
-	{type,  message|message_waiting|data} |
-	{class, alert|me|sim|te} |
-	{alphabet, default|ucs2|octet} |
-	{pid, 0..255} |
-	{src, 0..65535} |
-	{src, 0..65535} |
-	{anumber, addr()} |
-	{bnumber, addr()} |
-	{smsc, addr()} |
+	{type,     dcs_type()} |
+	{class,    dcs_class()} |
+	{alphabet, dcs_alphabet()} |
+	{pid,      gsms_pid()} |
+	{src,      gsms_port()} |
+	{dst,      gsms_port()} |
+	{anumber,  gsms_addr()} |
+	{bnumber,  gsms_addr()} |
+	{smsc,     gsms_addr()} |
 	{'not', filter()} |
 	{'and', filter(), filter()} |
 	{'or', filter(), filter()}.
@@ -63,9 +61,9 @@
 
 -record(interface,
 	{
-	  pid     :: pid(),       %% interface pid
-	  mon     :: reference(), %% monitor reference
-	  bnumber :: addr(),      %% modem msisdn
+	  pid     :: pid(),        %% interface pid
+	  mon     :: reference(),  %% monitor reference
+	  bnumber :: gsms_addr(),  %% modem msisdn
 	  attributes = [] :: [{atom(),term()}]  %% general match keys
 	}).
 
@@ -93,6 +91,9 @@ subscribe(Filter) ->
 
 unsubscribe(Ref) ->
     gen_server:call(?SERVER, {unsubscribe, Ref}).
+
+join(BNumber,Attributes) ->
+    gen_server:call(?SERVER, {join,self(),BNumber,Attributes}).
 
 %%
 %% Called from gsms_srv backend to enter incoming message
@@ -242,13 +243,18 @@ handle_info({'DOWN',Ref,process,Pid,_Reason}, State) ->
 	    {reply, ok, State#state { subs = Subs} }
     end;
 
-handle_info({input_from, BNumber, Sms}, State) ->
+handle_info({input_from, BNumber, Pdu}, State) ->
+    lager:debug("input bnumber: ~p, pdu=~p\n", [BNumber,Pdu]),
     lists:foreach(
       fun(S) ->
-	      case match(S#subscription.filter, BNumber, Sms) of
+	      lager:debug("match filter: ~p\n", [S#subscription.filter]),
+	      case match(S#subscription.filter, BNumber, Pdu) of
 		  true ->
-		      S#subscription.pid ! {gsms, S#subscription.ref, Sms};
+		      lager:debug("match success send to ~p", 
+				  [S#subscription.pid]),
+		      S#subscription.pid ! {gsms, S#subscription.ref, Pdu};
 		  false ->
+		      lager:debug("match fail"),
 		      ok
 	      end
       end, State#state.subs),
