@@ -173,7 +173,7 @@ handle_call({subscribe,Pid,Filter}, _From, State) ->
     Subs = [#subscription { pid = Pid,
 			    ref = Ref,
 			    filter = Filter } | State#state.subs],
-    {reply, ok, State#state { subs = Subs} };
+    {reply, {ok,Ref}, State#state { subs = Subs} };
 handle_call({unsubscribe,Ref}, _From, State) ->
     case lists:keytake(Ref, #subscription.ref, State#state.subs) of
 	false -> 
@@ -240,7 +240,7 @@ handle_info({'DOWN',Ref,process,Pid,_Reason}, State) ->
 		    {noreply,State#state { ifs = Ifs }}
 	    end;
 	{value,_S,Subs} ->
-	    {reply, ok, State#state { subs = Subs} }
+	    {noreply, State#state { subs = Subs} }
     end;
 
 handle_info({input_from, BNumber, Pdu}, State) ->

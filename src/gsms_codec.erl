@@ -93,21 +93,31 @@ decode_out(<<L1,SmscAddr:L1/binary,
 
 %% return a list of pdu's
 -spec make_sms_submit(Opts::[gsms_pdu_option()],
-		      Message::[integer()]) -> [#gsms_submit_pdu{}].
+		      Message::[integer()]) -> 
+			     {ok,[#gsms_submit_pdu{}]} |
+			     {error, term()}.
 			       
 make_sms_submit(Opts,Message) ->
-    Pdu = set_pdu_opts(Opts,#gsms_submit_pdu{}),
-    Ref = proplists:get_value(ref, Opts, 1),
-    {Dcs,UDList} = encode_ud(Pdu#gsms_submit_pdu.dcs, Message,
-			      Pdu#gsms_submit_pdu.udh, Ref),
-    lists:map(
-      fun({Udl,Ud,Udhi0}) ->
-	      Udhi = Udhi0 or Pdu#gsms_submit_pdu.udhi,
-	      Pdu#gsms_submit_pdu { dcs=Dcs, udl=Udl, ud=Ud, udhi=Udhi }
-      end, UDList).
+    case set_pdu_opts(Opts,#gsms_submit_pdu{}) of
+	{ok,Pdu} ->
+	    Ref = proplists:get_value(ref, Opts, 1),
+	    {Dcs,UDList} = encode_ud(Pdu#gsms_submit_pdu.dcs, Message,
+				     Pdu#gsms_submit_pdu.udh, Ref),
+	    {ok,lists:map(
+		  fun({Udl,Ud,Udhi0}) ->
+			  Udhi = Udhi0 or Pdu#gsms_submit_pdu.udhi,
+			  Pdu#gsms_submit_pdu { dcs=Dcs, udl=Udl, 
+						ud=Ud, udhi=Udhi }
+		  end, UDList)};
+	Error ->
+	    Error
+    end.
+
 
 -spec set_pdu_opts(Opts::[gsms_pdu_option()], Pdu::#gsms_submit_pdu{}) ->
-			  Pdu::#gsms_submit_pdu{}.
+			  {ok,Pdu::#gsms_submit_pdu{}} |
+			  {error, badarg}.
+
 			  
 set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
     case Key of
@@ -131,10 +141,31 @@ set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { srr=Value });
 	mref when ?is_byte(Value) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { mref=Value });
-	vpf when is_atom(Value) ->
+	vpf when Value =:= none;
+		 Value =:= relative; 
+		 Value =:= enhanced; 
+		 Value =:= absolute ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { vpf=Value });
 	vp ->
-	    set_pdu_opts(Kvs, R#gsms_submit_pdu { vp=Value });
+	    case Value of
+		none ->
+		    set_pdu_opts(Kvs, R#gsms_submit_pdu 
+				 { vpf = none, vp=undefined });
+		{relative, Seconds} when is_integer(Seconds), Seconds>=0 ->
+		    set_pdu_opts(Kvs, R#gsms_submit_pdu 
+				 { vpf = relative, vp=Seconds });
+		{absolute,DateTimeTz} ->
+		    case is_valid_scts(DateTimeTz) of
+			true ->
+			    set_pdu_opts(Kvs, R#gsms_submit_pdu 
+					 { vpf = absolute,
+					   vp=DateTimeTz });
+			false ->
+			    {error, badarg}
+		    end;
+		{enhanced,_} ->
+		    {error, not_supported}  %% yet
+	    end;
 	addr when is_record(Value,gsms_addr) ->
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { addr=Value });
 	addr when is_list(Value),hd(Value)=:=$+ ->
@@ -150,38 +181,63 @@ set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
 	dcs when is_integer(Value) ->
 	    Dcs = decode_dcs(Value),
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs });
-	type ->
+	type -> %% fixme test
 	    Dcs = R#gsms_submit_pdu.dcs,
 	    Dcs1 = Dcs#gsms_dcs { type = Value },
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
-	class ->
+	class -> %% fixme test
 	    Dcs = R#gsms_submit_pdu.dcs,
 	    Dcs1 = Dcs#gsms_dcs { class = Value },
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
-	alphabet ->
+	alphabet -> %% fixme test
 	    Dcs = R#gsms_submit_pdu.dcs,
 	    Dcs1 = Dcs#gsms_dcs { alphabet = Value },
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
-	compression ->
+	compression -> %% fixme test
 	    Dcs = R#gsms_submit_pdu.dcs,
 	    Dcs1 = Dcs#gsms_dcs { compression = Value },
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
-	store ->
+	store -> %% fixme test
 	    Dcs = R#gsms_submit_pdu.dcs,
 	    Dcs1 = Dcs#gsms_dcs { store = Value },
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
-	wait_type ->
+	wait_type -> %% fixme test
 	    Dcs = R#gsms_submit_pdu.dcs,
 	    Dcs1 = Dcs#gsms_dcs { wait_type = Value },
 	    set_pdu_opts(Kvs, R#gsms_submit_pdu { dcs=Dcs1 });
 	%% recognized options, but not for pdu
-	notify ->
+	notify ->  %% fixme test?
 	    set_pdu_opts(Kvs, R);	    
-	ref ->
-	    set_pdu_opts(Kvs, R)
+	ref ->  %% fixme test?
+	    set_pdu_opts(Kvs, R);
+	_ ->
+	    lager:debug("set_pdu_opts: unknown pdu option ~p", 
+			[{Key,Value}]),
+	    {error, badarg}
     end;
 set_pdu_opts([], R) ->
-    R.
+    {ok,R}.
+
+is_valid_scts({{Date,{H,M,S}},Tz}) ->
+    try calendar:valid_date(Date) of
+	true ->
+	    if is_integer(H), H >= 0, H =< 23,
+	       is_integer(M), M >= 0, M =< 59,
+	       is_integer(S), S >= 0, S =< 59,
+	       is_float(Tz) ->
+		    true;
+	       true ->
+		    false
+	    end;
+	false -> false
+    catch
+	error:_ -> false
+    end;
+is_valid_scts(_) ->
+    false.
+
+    
+
 
 encode_sms(R=#gsms_submit_pdu{}) ->
     SmscAddr = encode_smsc_addr(R#gsms_submit_pdu.smsc),

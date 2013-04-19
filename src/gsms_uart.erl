@@ -24,7 +24,7 @@
 %%% Created :  1 Jul 2010 by Tony Rogvall 
 %%% @end
 %%%-------------------------------------------------------------------
--module(gsms_drv).
+-module(gsms_uart).
 
 -behaviour(gen_server).
 
@@ -45,36 +45,7 @@
 	 normalise_opts/1,
 	 validate_opts/1,
 	 validate_opt/2]).
-%%
--export([reset/1]).
-%% mode bits
--export([init_csms_service/1]).
--export([check_csms_capability/1]).
--export([set_csms_notification/1]).
--export([set_csms_pdu_mode/1]).
--export([get_version/1]).
--export([get_manufacturer/1, get_model/1]).
--export([get_imei/1, get_msisdn/1, get_imsi/1]).
--export([get_activity_status/1]).
--export([get_network_registration_status/1]).
--export([get_signal_strength/1]).
--export([get_battery_status/1]).
--export([get_smsc/1]).
 
-%% sms
--export([list_unread_messages/1]).
--export([list_read_messages/1]).
--export([list_unsent_messages/1]).
--export([list_sent_messages/1]).
--export([list_all_messages/1]).
--export([list_indices/1]).
-
--export([delete_message/2, delete_message/3]).
--export([delete_all_message/1]).
--export([read_message/2]).
--export([read_all_messages/1]).
--export([write_message/3]).
--export([send_message/3]).
 -export([trimhd/1,trimtl/1,trim/1]).
 
 %% gen_server callbacks
@@ -93,14 +64,13 @@
 -define(ESC,    16#1B).
 
 %% For dialyzer
--type gsms_option() :: device | reopen_timeout | reply_timeout.
+-type gsms_uart_option() :: device | reopen_timeout | reply_timeout.
 
--type gsms_options()::{device, string()} |
-		      {reopen_timeout, timeout()} |
-		      {reply_timeout, timeout()} |
-		      {smsc, string()}.
-
--type driver() :: pid() | atom().
+-type gsms_uart_config() ::
+	{device, string()} |
+	{reopen_timeout, timeout()} |
+	{reply_timeout, timeout()} |
+	{smsc, string()}.
 
 -record(subscription,
 	{
@@ -130,7 +100,7 @@
 %%% API
 %%%===================================================================
 
--spec options() -> [uart:uart_option()|gsms_option()].
+-spec options() -> [uart:uart_option()|gsms_uart_option()].
 
 options() ->
     uart:options() ++
@@ -139,156 +109,6 @@ options() ->
 	 reopen_timeout,
 	 reply_timeout
 	].
-
--spec reset(Drv::driver()) -> ok.
-
-reset(Drv)  ->
-    at(Drv,"Z"),
-    at(Drv,"E0"),
-    set_csms_pdu_mode(Drv),
-    set_csms_notification(Drv).
-
-
--spec init_csms_service(Drv::driver()) -> ok.    
-init_csms_service(Drv) ->
-    ok = check_csms_capability(Drv),
-    ok = set_csms_pdu_mode(Drv),
-    ok = set_csms_notification(Drv),
-    %% how do we read the stored pdu like they where receive and when?
-    %% trigger automatic read of stored SMS when a subsrciber is 
-    %% registered? subscriber need to ack in order to delete the
-    %% stored SMS
-    ok.
-
-
--spec check_csms_capability(Drv::driver()) -> ok.
-check_csms_capability(Drv) ->
-    case at(Drv,"+CSMS=0") of
-	{ok, "+CSMS:"++Storage} ->
-	    io:format("sms_pdu: +CSMS: ~s\n", [Storage]);
-	Error ->
-	    Error
-    end.
-
--spec set_csms_pdu_mode(Drv::driver()) -> ok.
-
-set_csms_pdu_mode(Drv) ->  at(Drv,"+CMGF=0").
-
-%% AT+CNMI=1,1,0,0,0 Set the new message indicators.
-%%
-%% AT+CNMI=<mode>,<mt>,<bm>,<ds>,<bfr>
-%% 
-%% <mode>=1 discard unsolicited result codes indication when TA – 
-%%          TE link is reserved.
-%% <mt>=1 SMS-DELIVERs are delivered to the SIM and routed using 
-%%        unsolicited code.
-%% <bm>=0 no CBM indications are routed to the TE.
-%% <ds>=0 no SMS-STATUS-REPORTs are routed.
-%% <bfr>=0 TA buffer of unsolicited result codes defined within this
-%%         command is flushed to the TE.
-%% OK Modem Response.
-set_csms_notification(Drv) -> at(Drv,"+CNMI=1,1,0,0,0").
-
-%% pick up information about various things
-get_version(Drv) -> at(Drv,"+CGMR").
-    
-get_manufacturer(Drv) -> at(Drv,"+CGMI").
-
-get_model(Drv) -> at(Drv,"+CGMM").
-
-get_imei(Drv) -> at(Drv,"+CGSN").
-
-get_msisdn(Drv) -> at(Drv,"+CNUM").
-
-get_imsi(Drv) -> at(Drv,"+CIMI").
-
-get_activity_status(Drv) -> at(Drv,"+CPAS").
-
-get_network_registration_status(Drv) -> at(Drv,"+CREG?").
-
-get_signal_strength(Drv) -> at(Drv,"+CSQ").
-
-get_battery_status(Drv) -> at(Drv,"+CBC").
-
-get_smsc(Drv) -> at(Drv, "+CSCA?").
-    
-
-%% SMS commands
-list_unread_messages(Drv) ->  at(Drv,"+CMGL=0").
-list_read_messages(Drv)   ->  at(Drv,"+CMGL=1").
-list_unsent_messages(Drv) ->  at(Drv,"+CMGL=2").
-list_sent_messages(Drv)   ->  at(Drv,"+CMGL=3").
-list_all_messages(Drv)    ->  at(Drv,"+CMGL=4").
-
-%% message list
-list_indices(Drv) ->
-    case at(Drv,"+CMGD=?") of
-	{ok,"+CMGD:"++Params} ->
-	    case erl_scan:string(Params) of
-		{ok,Ts,_} ->
-		    parse_index_lists(Ts);
-		Error ->
-		    Error
-	    end;
-	Error ->
-	    Error
-    end.
-
-
-%% +CMGD=I    == +CMDG=I,0   only delete message I
-%% +CMGD=I,1  == +CMGD=0,1   delete ALL "read" messages
-%% +CMGD=I,2  == +CMGD=0,2   delete ALL "read","sent" messages
-%% +CMGD=I,3  == +CMGD=0,3   delete ALL "read","sent", "unsent" messages
-%% +CMFD=I,4  == +CMGD=0,4   delete ALL messages
-
-delete_message(Drv,I) when is_integer(I), I>=0 ->
-    delete_message(Drv,I,0).
-
-delete_message(Drv,I,F) when is_integer(I), I>=0, F>=0,F=<4 ->
-    at(Drv,"+CMGD="++integer_to_list(I)++","++integer_to_list(F)).
-
-delete_all_message(Drv) ->
-    delete_message(Drv,1,4).
-
-read_message(Drv,I) when is_integer(I), I>=0 ->
-    case at(Drv,"+CMGR="++integer_to_list(I)) of
-	ok ->
-	    {error, no_such_index};
-	{ok,["+CMGR: "++_StatStoreLen,HexPdu]} ->
-	    {ok,gsms_codec:decode_in_hex(HexPdu)};
-	{error, Error} ->
-	    {error, cms_error(Error)}
-    end.
-
-read_all_messages(Drv) ->
-    at(Drv,"+CMGL=1").
-
-send_message(Drv,Opts,Body) ->
-    lists:foreach(
-      fun(Pdu) ->
-	      gsms_codec:dump_yang(Pdu),
-	      Bin = gsms_codec:encode_sms(Pdu),
-	      Hex = gsms_codec:binary_to_hex(Bin),
-	      Len = (length(Hex)-2) div 2,
-	      case ats(Drv,"+CMGS="++integer_to_list(Len)) of
-		  ready_to_send -> atd(Drv,Hex);
-		  Error -> Error
-	      end
-      end, gsms_codec:make_sms_submit(Opts, Body)).
-
-
-write_message(Drv,Opts,Body) ->
-    lists:foreach(
-      fun(Pdu) ->
-	      gsms_codec:dump_yang(Pdu),
-	      Bin = gsms_codec:encode_sms(Pdu),
-	      Hex = gsms_codec:binary_to_hex(Bin),
-	      Len = (length(Hex)-2) div 2,
-	      case ats(Drv,"+CMGW="++integer_to_list(Len)) of
-		  ready_to_send -> atd(Drv,Hex);
-		  Error -> Error
-	      end
-      end, gsms_codec:make_sms_submit(Opts, Body)).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -300,10 +120,10 @@ write_message(Drv,Opts,Body) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec start_link([gsms_options()]) -> 
-		   {ok, Pid::pid()} | 
-		   ignore | 
-		   {error, Error::term()}.
+-spec start_link([gsms_uart_config()]) -> 
+			{ok, Pid::pid()} | 
+			ignore | 
+			{error, Error::term()}.
 %%
 %% HUAWEI: uses device /dev/tty.HUAWEIMobile-Pcui
 %% for SMS services to be able to get notifications which are
@@ -380,7 +200,7 @@ at(Drv,Command) ->
 
 %% at command that could lead to data-enter state
 ats(Drv,Command) ->
-    gen_server:call(Drv, {ats,Command}, 10000).
+    gen_server:call(Drv, {ats,Command}, 20000).
 
 %% send data in data-enter state
 atd(Drv, Hex) ->
@@ -397,7 +217,7 @@ atd(Drv, Hex) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec init([gsms_options()]) -> 
+-spec init([Caller::pid()|gsms_uart_config()]) -> 
 		  {ok, Ctx::#ctx{}} |
 		  {ok, Ctx::#ctx{}, Timeout::timeout()} |
 		  ignore |
@@ -455,8 +275,10 @@ handle_call({setopts, Opts},_From, Ctx=#ctx { uart = U}) ->
 		Device when is_list(Device), Device =/= Ctx#ctx.device ->
 		    Uopts2 = normalise_opts(Ctx#ctx.uopts ++ Uopts1),
 		    Ctx1 = close(Ctx),
-		    Ctx2 = Ctx1#ctx { uart=undefined, reopen_timer = undefined,
-				      device=Device, uopts=Uopts2, 
+		    Ctx2 = Ctx1#ctx { uart=undefined, 
+				      reopen_timer = undefined,
+				      device=Device, 
+				      uopts=Uopts2, 
 				      opts=Gopts0 },
 		    case open(Ctx2) of
 			{ok, Ctx3} -> {reply,ok,Ctx3};
@@ -492,7 +314,7 @@ handle_call({unsubscribe,Ref},_From,Ctx) ->
     {reply, ok, Ctx1};
 handle_call(stop, _From, Ctx) ->
     {stop, normal, ok, Ctx};
-%% other commands we queue if gsms_drv is busy processing command
+%% other commands we queue if gsms_uart is busy processing command
 handle_call(Call,From,Ctx=#ctx {client = Client}) 
   when Client =/= undefined andalso Call =/= stop ->
     %% Driver is busy ..
@@ -544,7 +366,7 @@ handle_call({ats,Command},From,Ctx) ->
 		    %% wait for exacly ">\r\n"
 		    uart:setopts(U, [{active,once},{packet,{size,3}}]),
 		    %% Wait for confirmation
-		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,3000),
+		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,5000),
 		    TRef = erlang:start_timer(Tm, self(), reply),
 		    {noreply,Ctx#ctx {command  = Command,client=From,
 				      activity = ats,
@@ -653,20 +475,23 @@ handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
 	"+CMS ERROR:"++Code ->
 	    reply(error, Ctx#ctx { reply=[trimhd(Code)|Ctx#ctx.reply]});
 	"+CMTI:"++EventData -> %% new SMS message (stored) arrived
-	    Ctx1 = event_notify(trimhd(EventData), Ctx),
+	    Ctx1 = event_notify(cmti,trimhd(EventData), Ctx),
 	    {noreply, Ctx1};
 	"+CMT:"++EventData -> %% new SMS message arrived
-	    Ctx1 = event_notify(trimhd(EventData), Ctx),
+	    Ctx1 = event_notify(cmt,trimhd(EventData), Ctx),
+	    {noreply, Ctx1};
+	"+CMGS:"++EventData -> %% Send SMS response code
+	    Ctx1 = event_notify(cmgs,trimhd(EventData), Ctx),
 	    {noreply, Ctx1};
 	"+CDSI:"++EventData -> %% SMS status report (stored) arrived
-	    Ctx1 = event_notify(trimhd(EventData), Ctx),
+	    Ctx1 = event_notify(cdsi,trimhd(EventData), Ctx),
 	    {noreply, Ctx1};
 	"+CDS:"++EventData -> %% SMS status report
-	    Ctx1 = event_notify(trimhd(EventData), Ctx),
+	    Ctx1 = event_notify(cds,trimhd(EventData), Ctx),
 	    {noreply, Ctx1};
-	"^"++_Status -> %% Periodic information
-	    %% maybe match subscriptions? 
-	    {noreply,Ctx};	    
+	"^"++EventData -> %% Periodic information
+	    Ctx1 = event_notify(periodic,trimhd(EventData), Ctx),
+	    {noreply,Ctx1};
 	Reply ->
 	    if Ctx#ctx.client =/= undefined ->
 		    lager:debug("handle_info: data ~p", [Reply]),
@@ -772,7 +597,7 @@ open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
 	    flush_uart(U),
 	    lager:debug("sync stop"),
 	    %% signal that the the uart device is up running
-	    Ctx#ctx.caller ! {gsms_drv, self(), up},
+	    Ctx#ctx.caller ! {gsms_uart, self(), up},
 	    {ok, Ctx#ctx { uart=U }};
 	{error, E} when E == eaccess;
 			E == enoent ->
@@ -892,13 +717,15 @@ remove_subscription(Ref, Ctx=#ctx { subs=Subs}) ->
     Ctx#ctx { subs = Subs1 }.
     
 
-event_notify(String, Ctx) ->
-    Event = case string:tokens(String, ",") of
-		[Store,Index] ->
-		    [{"store",unquote(Store)},{"index",to_integer(Index)}];
-		Items ->
-		    [{"items", Items}]
-	    end,
+event_notify(Name,String, Ctx) ->
+    Args =
+	case string:tokens(String, ",") of
+	    [Store,Index] ->
+		[{"store",unquote(Store)},{"index",to_integer(Index)}];
+	    Items ->
+		[{"items", Items}]
+	end,
+    Event = {Name,Args},
     lager:debug("Event: ~p", [Event]),
     send_event(Ctx#ctx.subs, Event),
     Ctx.
@@ -967,61 +794,3 @@ is_timeout(T) ->
     (T =:= infinity) orelse
 	(is_integer(T) andalso (T>=0)).
 
-parse_index_lists(Ts) ->
-    parse_index_lists(Ts, []).
-
-parse_index_lists([{'(',_}|Ts], Acc) ->   parse_index_list(Ts, [], Acc);
-parse_index_lists([], Acc) ->   {ok,lists:reverse(Acc)};
-parse_index_lists(_Ts, _Acc) ->  {error, {syntax_error, _Ts}}.
-
-parse_index_lists1([{',',_}|Ts], Acc) -> parse_index_lists(Ts, Acc);
-parse_index_lists1([], Acc) -> {ok,lists:reverse(Acc)};
-parse_index_lists1(_Ts, _Acc) ->  {error, {syntax_error, _Ts}}.
-
-%%
-%% ival = <i> '-' <j>
-%% ival = <i>
-%% ival-list = '(' (ival (',' ival)*) ? ')'
-%%
-parse_index_list([{integer,_,I},{'-',_},{integer,_,J}|Ts],Iv,Acc) ->
-    parse_index_list1(Ts,[{I,J}|Iv],Acc);
-parse_index_list([{integer,_,I}|Ts],Iv,Acc) ->
-    parse_index_list1(Ts,[I|Iv],Acc);
-parse_index_list([{')',_}|Ts],Iv,Acc) ->
-    parse_index_lists1(Ts,[lists:reverse(Iv)|Acc]);
-parse_index_list(_Ts, _Iv, _Acc) ->
-    {error, {syntax_error,_Ts}}.    
-
-parse_index_list1([{',',_},{integer,_,I},{'-',_},{integer,_,J}|Ts],Iv,Acc) ->
-    parse_index_list1(Ts,[{I,J}|Iv],Acc);
-parse_index_list1([{',',_},{integer,_,I}|Ts],Iv,Acc) ->
-    parse_index_list1(Ts,[I|Iv],Acc);
-parse_index_list1([{')',_}|Ts],Iv,Acc) ->
-    parse_index_lists1(Ts,[lists:reverse(Iv)|Acc]);
-parse_index_list1(_Ts,_Iv,_Acc) ->
-    {error, {syntax_error,_Ts}}.
-
-cms_error(Code) when is_list(Code) ->
-    Code ++ ": " ++ cms_error_string(list_to_integer(Code)).
-
-cms_error_string(300) -> "Phone failure";
-cms_error_string(301) -> "SMS service of phone reserved";
-cms_error_string(302) -> "Operation not allowed";
-cms_error_string(303) -> "Operation not supported";
-cms_error_string(304) -> "Invalid PDU mode parameter";
-cms_error_string(305) -> "Invalid text mode parameter";
-cms_error_string(310) -> "SIM not inserted";
-cms_error_string(311) -> "SIM PIN necessary";
-cms_error_string(312) -> "PH-SIM PIN necessary";
-cms_error_string(313) -> "SIM failure";
-cms_error_string(314) -> "SIM busy";
-cms_error_string(315) -> "SIM wrong";
-cms_error_string(320) -> "Memory failure";
-cms_error_string(321) -> "Invalid memory index";
-cms_error_string(322) -> "Memory full";
-cms_error_string(330) -> "SMSC (message service center) address unknown";
-cms_error_string(331) -> "No network service";
-cms_error_string(332) -> "Network timeout";
-cms_error_string(500) -> "Unknown error";
-cms_error_string(512) -> "Manufacturer specific";
-cms_error_string(_) -> "Unknown".

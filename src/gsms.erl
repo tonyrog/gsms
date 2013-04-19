@@ -26,4 +26,8 @@ call([App|Apps], F) ->
 	    call(Apps, F);
 	Error ->
 	    Error
-    end.
+    end;
+call([],_F) ->
+    ok.
+
+
