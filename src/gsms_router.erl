@@ -96,7 +96,7 @@ join(BNumber,Attributes) ->
     gen_server:call(?SERVER, {join,self(),BNumber,Attributes}).
 
 %%
-%% Called from gsms_srv backend to enter incoming message
+%% Called from gsms_0705 backend to enter incoming message
 %%
 input_from(BNumber, Sms) ->
     lager:debug("message input modem:~s, message = ~p\n",
@@ -154,7 +154,7 @@ handle_call({send,Opts,Body}, _From, State) ->
 	undefined ->
 	    case State#state.ifs of 
 		[I|_] ->
-		    Reply = gsms_srv:send(I#interface.pid, Opts, Body),
+		    Reply = gsms_0705:send(I#interface.pid, Opts, Body),
 		    {reply, Reply, State};
 		[] ->
 		    {reply, {error,enoent}, State}
@@ -164,7 +164,7 @@ handle_call({send,Opts,Body}, _From, State) ->
 		false ->
 		    {reply, {error,enoent}, State};
 		I ->
-		    Reply = gsms_srv:send(I#interface.pid, Opts, Body),
+		    Reply = gsms_0705:send(I#interface.pid, Opts, Body),
 		    {reply, Reply, State}
 	    end
     end;
