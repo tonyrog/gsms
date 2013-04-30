@@ -30,6 +30,10 @@ decode_in_hex(RawData) ->
 decode_out_hex(RawData) ->
     decode_out(hex_to_binary(RawData)).
 
+-spec decode_in(Message::binary()) ->
+		       {ok, #gsms_deliver_pdu{}} | 
+		       {error,Reason::atom()}.
+
 decode_in(<<L1,SmscAddr:L1/binary,
 	    TP_RP:1,TP_UDHI:1,TP_SRI:1,R1:1,R2:1,TP_MMS:1,?MTI_SMS_DELIVER:2,
 	    AddrLen,Data0/binary>>) ->
@@ -39,22 +43,29 @@ decode_in(<<L1,SmscAddr:L1/binary,
     AddrType = decode_addr_type(AType),
     Dcs = decode_dcs(TP_DCS),
     {UDH,UD} = decode_ud(Dcs,TP_UDHI,TP_UDL,TP_UD),
-    #gsms_deliver_pdu {
-       smsc = decode_smsc_addr(SmscAddr),
-       rp   = ?decode_bool(TP_RP),
-       udhi = ?decode_bool(TP_UDHI),
-       sri  = ?decode_bool(TP_SRI),
-       res1 = R1,
-       res2 = R2,
-       mms  = ?decode_bool(TP_MMS),
-       addr = decode_addr(AddrType,Addr),
-       pid = TP_PID,
-       dcs = Dcs,
-       scts = decode_scts(TP_SCTS),
-       udl  = TP_UDL,
-       udh  = UDH,
-       ud   = UD
-      }.
+    {ok, #gsms_deliver_pdu {
+	    smsc = decode_smsc_addr(SmscAddr),
+	    rp   = ?decode_bool(TP_RP),
+	    udhi = ?decode_bool(TP_UDHI),
+	    sri  = ?decode_bool(TP_SRI),
+	    res1 = R1,
+	    res2 = R2,
+	    mms  = ?decode_bool(TP_MMS),
+	    addr = decode_addr(AddrType,Addr),
+	    pid = TP_PID,
+	    dcs = Dcs,
+	    scts = decode_scts(TP_SCTS),
+	    udl  = TP_UDL,
+	    udh  = UDH,
+	    ud   = UD
+	   }};
+decode_in(Binary) when is_binary(Binary) ->
+    {error, einval}.
+
+			    
+-spec decode_out(Message::binary()) ->
+			{ok, #gsms_submit_pdu{}} | 
+			{error,Reason::atom()}.
 
 decode_out(<<L1,SmscAddr:L1/binary,
 	     TP_RP:1,TP_UDHI:1,TP_SRR:1,TP_VPF:2,TP_RD:1,?MTI_SMS_SUBMIT:2,
@@ -74,22 +85,26 @@ decode_out(<<L1,SmscAddr:L1/binary,
     <<VP:VPLen/binary, TP_UDL:8, TP_UD/binary>> = Data1,
     Dcs = decode_dcs(TP_DCS),
     {UDH,UD} = decode_ud(Dcs,TP_UDHI,TP_UDL,TP_UD),
-    #gsms_submit_pdu { 
-       smsc = decode_smsc_addr(SmscAddr),
-       rp   = ?decode_bool(TP_RP),
-       udhi = ?decode_bool(TP_UDHI),
-       srr  = ?decode_bool(TP_SRR),
-       vpf  = VPF,
-       rd   = ?decode_bool(TP_RD),
-       mref = TP_MREF,
-       addr = decode_addr(AddrType,Addr),
-       pid = TP_PID,
-       dcs = Dcs,
-       vp  = decode_vp(VPF,VP),
-       udl = TP_UDL,
-       udh = UDH,
-       ud = UD
-      }.
+    {ok, #gsms_submit_pdu { 
+	    smsc = decode_smsc_addr(SmscAddr),
+	    rp   = ?decode_bool(TP_RP),
+	    udhi = ?decode_bool(TP_UDHI),
+	    srr  = ?decode_bool(TP_SRR),
+	    vpf  = VPF,
+	    rd   = ?decode_bool(TP_RD),
+	    mref = TP_MREF,
+	    addr = decode_addr(AddrType,Addr),
+	    pid = TP_PID,
+	    dcs = Dcs,
+	    vp  = decode_vp(VPF,VP),
+	    udl = TP_UDL,
+	    udh = UDH,
+	    ud = UD
+	   }};
+decode_out(Binary) when is_binary(Binary) ->
+    {error, einval}.
+
+
 
 %% return a list of pdu's
 -spec make_sms_submit(Opts::[gsms_pdu_option()],
@@ -560,14 +575,38 @@ decode_ud(#gsms_dcs{compression=uncompressed,alphabet=default},
     UDH = decode_udh(UDHBin),
     {UDH,gsms_0338:decode(Gsm8)};
 decode_ud(#gsms_dcs{compression=uncompressed,alphabet=ucs2},
-	  0,_UDL,Data) ->
-    %% FIXME: pad?
-    Ucs = [ U || <<U:16/big>> <= Data ],
-    {[],Ucs};
+	  0,UDL,Data1) ->
+    case Data1 of
+	<<Data2:UDL/binary, _/binary>> ->
+	    Ucs = [ U || <<U:16/big>> <= Data2 ],
+	    {[],Ucs}
+    end;
+decode_ud(#gsms_dcs{compression=uncompressed,alphabet=ucs2},
+	  1, UDL, Data1 = <<UDHL,UDHBin:UDHL/binary,_/binary>>) ->
+    Pad = (UDHL+1) band 1,
+    UDL8 = UDL - (UDHL+1+Pad),
+    %% io:format("UDL=~w, Pad=~w, UDL8=~w\n", [UDL,Pad,UDL8]),
+    case Data1 of
+	<<_,_:UDHL/binary,_:Pad/unit:8,Data2:UDL8/binary>> ->
+	    UDH = decode_udh(UDHBin),
+	    {UDH, [ U || <<U:16/big>> <= Data2 ]}
+    end;
 decode_ud(#gsms_dcs{compression=uncompressed,alphabet=octet},
-	  0,_UDL,Data) ->
-    Octets = [ U || <<U:8>> <= Data ],
-    {[],Octets}.
+	  0,UDL, Data1) ->
+    case Data1 of
+	<<Data2:UDL/binary>> ->
+	    {[], binary_to_list(Data2)}
+    end;
+decode_ud(#gsms_dcs{compression=uncompressed,alphabet=octet},
+	  1, UDL, <<UDHL,UDHBin:UDHL/binary,Data1/binary>>) ->
+    UDL8 = UDL - (UDHL+1),
+    case Data1 of
+	<<_,_:UDHL/binary,Data2:UDL8/binary>> ->
+	    UDH = decode_udh(UDHBin),
+	    {UDH, binary_to_list(Data2)}
+    end.
+
+
 
 encode_ud(Dcs0=#gsms_dcs{alphabet=Alpha0},
 	  Message, UDH, Ref) ->
@@ -637,11 +676,13 @@ encode_ud_(#gsms_dcs{compression=uncompressed,alphabet=ucs2}, Message, UDH) ->
 	    {N, Ucs2, Message1, false};
 	UDHL ->
 	    UDHData = encode_udh(UDH),
-	    UDHL16 = (UDHL+1) div 2,
+	    Pad = (UDHL+1) band 1,
+	    UDHL16 = (UDHL+1+Pad) div 2, %% check this
 	    {Ucs2,Message1} = encode_ucs2(Message,?MAX_16BIT_LEN-UDHL16,[]),
 	    N = byte_size(Ucs2),
-	    Ucs21 = prepend(UDHL band 1,0,Ucs2),
-	    {UDHL16+N,[UDHL,UDHData,Ucs21],Message1,true}
+	    Ucs21 = prepend(Pad,0,Ucs2),
+	    UDL = N + UDHL + 1 + Pad,
+	    {UDL,[UDHL,UDHData,Ucs21],Message1,true}
     end;
 encode_ud_(#gsms_dcs{compression=uncompressed,alphabet=octet}, Message, UDH) ->
     case len_udh(UDH) of

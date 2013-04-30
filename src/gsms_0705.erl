@@ -718,7 +718,7 @@ drv_read_message(Drv,I) when is_integer(I), I>=0 ->
 	ok ->
 	    {error, no_such_index};
 	{ok,["+CMGR: "++_StatStoreLen,HexPdu]} ->
-	    {ok,gsms_codec:decode_in_hex(HexPdu)};
+	    gsms_codec:decode_in_hex(HexPdu);
 	{error, Error} ->
 	    {error, cms_error(Error)}
     end.
