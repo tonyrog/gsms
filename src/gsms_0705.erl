@@ -451,6 +451,8 @@ handle_info({gsms_event,Ref,Event}, State) when State#state.ref =:= Ref ->
 handle_info({gsms_uart, Pid, up}, State) when State#state.drv =:= Pid ->
     %% gsms_uart is up and running 
     %% FIXME: check if sim is locked & unlock if possible
+    gsms_uart:at(Pid,"E0"),  %% disable echo (again)
+    timer:sleep(100),        %% help?
     ok = drv_check_csms_capability(Pid),
     ok = drv_set_csms_pdu_mode(Pid),
     ok = drv_set_csms_notification(Pid),
