@@ -94,9 +94,10 @@ handle_call(switch, _From, State) ->
     {reply, Reply, State};
 
 handle_call({establish,I}, _From, State) ->
+    Control = (?CONTROL_SABM+?CONTROL_P),
     Address = (I bsl 2) + ?COMMAND + ?NEXTENDED,
     Length  = (0 bsl 1) + ?NEXTENDED,
-    Hdr     = <<(?CONTROL_SABM+?CONTROL_P),Address,Length>>,
+    Hdr     = <<Control,Address,Length>>,
     FCS     = gsms_fcs:crc(Hdr),
     Reply = gsms_uart:send(State#state.drv, <<?BASIC,Hdr/binary,FCS,?BASIC>>),
     {reply, Reply, State};

@@ -37,7 +37,7 @@
 	 subscribe/2,
 	 unsubscribe/2,
 	 setopts/2,
-	 at/2, ats/2, atd/2]).
+	 at/2, ats/2, atd/2, send/2]).
 
 %% Option processing
 -export([options/0,
@@ -205,6 +205,9 @@ ats(Drv,Command) ->
 %% send data in data-enter state
 atd(Drv, Hex) ->
     gen_server:call(Drv, {atd,Hex}, 20000).
+
+send(Drv, Data) ->
+    gen_server:call(Drv, {send,Data}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -408,6 +411,19 @@ handle_call({atd,Hex},From,Ctx) ->
 	    end
     end;    
 
+handle_call({send,Data},From,Ctx) ->
+    lager:debug("handle_call: send ~p", [Data]),
+    case Ctx#ctx.uart of
+	simulated ->
+	    lager:info("simulated output ~p\n", [Hex]),
+	    {reply, ok, Ctx};
+	undefined ->
+	    lager:info("~p: No port defined yet.\n", [?MODULE]),
+	    {reply, {error,no_port}, Ctx};
+	U ->
+	    Reply = uart:send(U, Data),
+	    {reply, Reply, Ctx}
+    end;
 handle_call(_Request, _From, Ctx) ->
     {reply, {error,bad_call}, Ctx}.
 
