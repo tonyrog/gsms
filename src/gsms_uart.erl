@@ -272,7 +272,7 @@ handle_call({setopts, Opts},_From, Ctx=#ctx { uart = U}) ->
     {Uopts0,Opts2} = split_opts(Opts1, uart:options()),
     {Gopts0,Opts3} = split_opts(Opts2, options()),
     case check_options(Uopts0,Gopts0,Opts3) of
-	ok ->	
+	ok ->
 	    Uopts1 = proplists:delete(device, Uopts0),
 	    case proplists:get_value(device, Uopts0) of
 		Device when is_list(Device), Device =/= Ctx#ctx.device ->
@@ -294,6 +294,7 @@ handle_call({setopts, Opts},_From, Ctx=#ctx { uart = U}) ->
 			simulated ->
 			    {reply, ok, Ctx#ctx { uopts=Uopts1, opts=Gopts0} };
 			_ ->
+			    lager:debug("uart:setopts ~p", [Uopts1]),
 			    case uart:setopts(U, Uopts1) of
 				ok ->
 				    {reply, ok, Ctx#ctx { uopts=Uopts1,
@@ -411,11 +412,11 @@ handle_call({atd,Hex},From,Ctx) ->
 	    end
     end;    
 
-handle_call({send,Data},From,Ctx) ->
+handle_call({send,Data},_From,Ctx) ->
     lager:debug("handle_call: send ~p", [Data]),
     case Ctx#ctx.uart of
 	simulated ->
-	    lager:info("simulated output ~p\n", [Hex]),
+	    lager:info("simulated output ~p\n", [Data]),
 	    {reply, ok, Ctx};
 	undefined ->
 	    lager:info("~p: No port defined yet.\n", [?MODULE]),
@@ -476,6 +477,10 @@ handle_info({timeout,TRef,reply},
     Ctx1 = Ctx#ctx { reply_timer=undefined, reply=[], client = undefined},
     next_command(Ctx1);
 
+handle_info({uart,U,Data}, Ctx) when U =:= Ctx#ctx.uart, is_binary(Data) ->
+    lager:debug("handle_info: noreply ~p", [Data]),
+    send_event(Ctx#ctx.subs, {data,Data}),
+    {noreply,Ctx};
 handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
     lager:debug("got uart data: ~p\n", [Data]),
     case trim(Data) of
@@ -514,6 +519,7 @@ handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
 		    {noreply,Ctx#ctx { reply=[Reply|Ctx#ctx.reply]}};
 	       true ->
 		    lager:debug("handle_info: noreply ~p", [Reply]),
+		    send_event(Ctx#ctx.subs, {data,Data}),
 		    {noreply,Ctx}
 	    end
     end;
