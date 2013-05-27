@@ -26,12 +26,12 @@ main(Options) ->
 
 command(["init"|Cmds]) -> %% init only
     gpio:init(?PWRKEY),
-    gpio:clr(?PWRKEY),
+    gpio:set_direction(?PWRKEY,low),
     gpio:init(?NRST),
-    gpio:clr(?NRST),
+    gpio:set_direction(?NRST,low),
     gpio:init(?RI),
     gpio:init(?DTR),
-    gpio:clr(?DTR),
+    gpio:set_direction(?DTR,low),
     command(Cmds);
 command(["pwron"|Cmds]) ->
     gpio:init(?PWRKEY),
