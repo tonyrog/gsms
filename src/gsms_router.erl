@@ -17,8 +17,9 @@
 %%% @author Tony Rogvall <tony@rogvall.se>
 %%% @doc
 %%%     Message router for SMS
+%%%
+%%% Created : 17 Apr 2013 by Tony Rogvall
 %%% @end
-%%% Created : 17 Apr 2013 by Tony Rogvall <tony@rogvall.se>
 %%%-------------------------------------------------------------------
 -module(gsms_router).
 
@@ -36,21 +37,6 @@
 -include("../include/gsms.hrl").
 
 -define(SERVER, ?MODULE). 
-
--type filter() :: 
-	[filter()] |
-	{type,     dcs_type()} |
-	{class,    dcs_class()} |
-	{alphabet, dcs_alphabet()} |
-	{pid,      gsms_pid()} |
-	{src,      gsms_port()} |
-	{dst,      gsms_port()} |
-	{anumber,  gsms_addr()} |
-	{bnumber,  gsms_addr()} |
-	{smsc,     gsms_addr()} |
-	{'not', filter()} |
-	{'and', filter(), filter()} |
-	{'or', filter(), filter()}.
 	
 -record(subscription,
 	{
@@ -245,19 +231,8 @@ handle_info({'DOWN',Ref,process,Pid,_Reason}, State) ->
 
 handle_info({input_from, BNumber, Pdu}, State) ->
     lager:debug("input bnumber: ~p, pdu=~p\n", [BNumber,Pdu]),
-    lists:foreach(
-      fun(S) ->
-	      lager:debug("match filter: ~p\n", [S#subscription.filter]),
-	      case match(S#subscription.filter, BNumber, Pdu) of
-		  true ->
-		      lager:debug("match success send to ~p", 
-				  [S#subscription.pid]),
-		      S#subscription.pid ! {gsms, S#subscription.ref, Pdu};
-		  false ->
-		      lager:debug("match fail"),
-		      ok
-	      end
-      end, State#state.subs),
+    lists:foreach(fun(S) -> match_filter(S, BNumber, Pdu) end, 
+		  State#state.subs),
     {noreply, State};
 handle_info({'EXIT', Pid, Reason}, State) ->
     case lists:keytake(Pid, #interface.pid, State#state.ifs) of
@@ -311,6 +286,20 @@ add_interface(Pid,BNumber,Attributes,State) ->
     link(Pid),
     State#state { ifs = [I | State#state.ifs ] }.
 
+match_filter(_S=#subscription {filter = Filter,
+			pid = Pid,
+			ref = Ref}, 
+      BNumber, Pdu) ->
+    lager:debug("match filter: ~p", [Filter]),
+    case match(Filter, BNumber, Pdu) of
+	true ->
+	    lager:debug("filter match success.", []),
+	    lager:debug("send to ~p", [Pid]),
+	    Pid ! {gsms, Ref, Pdu};
+	false ->
+	    lager:debug("filter match fail"),
+	    ok
+    end.
 
 match(As, BNum, Sms) when is_list(As) ->
     match_clause(As, BNum, Sms);
@@ -364,7 +353,10 @@ match_sms({src,Port}, Sms) ->
 match_sms({anumber,Addr}, Sms) ->
     match_addr(Addr, Sms#gsms_deliver_pdu.addr);
 match_sms({smsc,Addr}, Sms) ->
-    match_addr(Addr, Sms#gsms_deliver_pdu.smsc).
+    match_addr(Addr, Sms#gsms_deliver_pdu.smsc);
+match_sms({reg_exp, RegExp}, Sms) ->
+    match_body(RegExp, Sms#gsms_deliver_pdu.ud).
+
 
 %% Add some more smart matching here to select international / national
 %% country suffix etc.
@@ -373,3 +365,10 @@ match_addr(Addr, #gsms_addr { addr = Addr }) when is_list(Addr) -> true;
 match_addr(#gsms_addr { type=unknown, addr=Addr},
 	   #gsms_addr { addr=Addr}) -> true;
 match_addr(_, _) -> false.
+
+match_body(RegExp, UserData) ->
+    lager:debug("match regular expression: ~p", [RegExp]),
+    case re:run(UserData, RegExp, [{capture, none}]) of
+	match ->  true;
+	nomatch  -> false
+    end.

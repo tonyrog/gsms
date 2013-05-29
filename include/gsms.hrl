@@ -89,7 +89,7 @@
 	  rd=true,          %% :1 reject duplicates
 	  mref=0,           %% :8
 	  addr,             %% ::gsms_addr{} 
-	  pid=?DEFAULT_PID, %% protocol identifire
+	  pid=?DEFAULT_PID, %% protocol identifier
 	  dcs=#gsms_dcs{},  %% data coding scheme
 	  vp=?VP_RELATIVE,  %% vary depend on vpf
 	  udh=[] :: [gsms_ie()], %% user data header
@@ -122,6 +122,22 @@
 	{wait_type, dcs_wait_type()} |
 	{dcs, #gsms_dcs{}}
 	.
+
+-type filter() :: 
+	[filter()] |
+	{type,     dcs_type()} |
+	{class,    dcs_class()} |
+	{alphabet, dcs_alphabet()} |
+	{pid,      gsms_pid()} |
+	{src,      gsms_port()} |
+	{dst,      gsms_port()} |
+	{anumber,  gsms_addr()} |
+	{bnumber,  gsms_addr()} |
+	{smsc,     gsms_addr()} |
+	{reg_exp,  re:mp() | iodata()} |
+	{'not', filter()} |
+	{'and', filter(), filter()} |
+	{'or', filter(), filter()}.
 
 -endif.
 
