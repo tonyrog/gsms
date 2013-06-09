@@ -30,8 +30,12 @@
 -compile(export_all).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3]).
+-export([init/1, 
+	 handle_call/3, 
+	 handle_cast/2, 
+	 handle_info/2,
+	 terminate/2, 
+	 code_change/3]).
 
 -include_lib("lager/include/log.hrl").
 -include("../include/gsms.hrl").
@@ -62,7 +66,9 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-
+-spec send(Options::list({Key::atom(), Value::term()}), Body::string()) ->
+		  {ok, Ref::reference()} | 
+		  {error, Reason::term()}.
 
 send(Opts, Body) ->
     gen_server:call(?SERVER, {send, Opts, Body}).
