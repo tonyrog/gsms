@@ -607,16 +607,21 @@ open(Ctx=#ctx {device = ""}) ->
 open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
     case uart:open(Name,UOpts) of
 	{ok,U} ->
-	    lager:debug("open: ~s [~w]: ~p", [Name,UOpts,U]),
+	    lager:debug("open: ~s [~w] [~w]: ~p",
+			[Name,UOpts,uart:getopts(U,uart:options()),U]),
 	    flush_uart(U),
 	    lager:debug("sync start"),
 	    %% waky, waky ? do not echo
-	    uart:send(U, [?ESC]),      %% escape if stuck in message send
+	    uart:send(U, [?ESC|"AT\r\n"]),  %% escape if stuck in message send
+	    flush_uart(U, 1000, 0),
 	    uart:send(U, "ATZ\r\n"),   %% reset 
+	    flush_uart(U, 2000, 0),
 	    uart:send(U, "ATE0\r\n"),  %% echo off
+	    flush_uart(U, 1000, 0),
 	    uart:send(U, "AT\r\n"),   %% empty
+	    flush_uart(U, 100, 0),
 	    uart:send(U, "AT\r\n"),   %% empty
-	    flush_uart(U),
+	    flush_uart(U, 100, 0),
 	    lager:debug("sync stop"),
 	    %% signal that the the uart device is up running
 	    Ctx#ctx.caller ! {gsms_uart, self(), up},
