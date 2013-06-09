@@ -43,7 +43,8 @@
 %% @end
 %%--------------------------------------------------------------------
 -spec send(Options::list({Key::atom(), Value::term()}), Body::string()) ->
-		  ok | {error,Reason::term()}.
+		  {ok, Ref::reference()} | 
+		  {error, Reason::term()}.
 		  
 send(Opts, Body) ->
     gsms_router:send(Opts, Body).
