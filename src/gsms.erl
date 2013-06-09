@@ -24,7 +24,7 @@
 -module(gsms).
 -include("gsms.hrl").
 
-%% Inerface
+%% Interface
 -export([send/2, 
 	 subscribe/1,
 	 unsubscribe/1]).
