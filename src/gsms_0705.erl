@@ -465,7 +465,9 @@ handle_info({gsms_uart, Pid, up}, State) when State#state.drv =:= Pid ->
 		      State#state.bnumber
 	      end,
     State1 = State#state { bnumber = BNumber, drv_up = true },
-    gsms_router:join(BNumber, State1#state.attributes),
+    ok = gsms_router:join(BNumber, State1#state.attributes),
+    %% make sure we scan messages that arrived while we where gone,
+    scan_input(self()),
     lager:debug("running state = ~p", [State1]),
     {noreply, State1};
 
