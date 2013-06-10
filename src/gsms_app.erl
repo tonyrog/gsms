@@ -80,5 +80,4 @@ stop(_State) ->
 
 %% @private
 stop() ->
-    application:stop(gsms),
-    application:stop(uart).
+    application:stop(gsms).
