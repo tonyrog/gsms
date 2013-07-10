@@ -733,7 +733,7 @@ unquote([$"|Cs]) ->
 unquote(Cs1) -> Cs1.
 
 to_integer(Cs) ->
-    try list_to_integer(Cs, 10) of
+    try erlang:list_to_integer(Cs, 10) of
 	Value -> Value
     catch
 	error:_ -> Cs
