@@ -14,7 +14,7 @@
 -export([hex_to_binary/1]).
 -import(lists, [reverse/1]).
 
--include_lib("lager/include/log.hrl").
+-include("log.hrl").
 -include("../include/gsms.hrl").
 
 -define(Q, $").

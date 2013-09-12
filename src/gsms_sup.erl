@@ -26,7 +26,7 @@
 
 -behaviour(supervisor).
 
--include_lib("lager/include/log.hrl").
+-include("log.hrl").
 %% external exports
 -export([start_link/0, 
 	 start_link/1, 
