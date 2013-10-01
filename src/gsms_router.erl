@@ -25,9 +25,16 @@
 
 -behaviour(gen_server).
 
+-include("log.hrl").
+-include("../include/gsms.hrl").
+
 %% API
--export([start_link/1]).
--compile(export_all).
+-export([start_link/1,
+	send/2,
+	subscribe/1,
+	unsubscribe/1,
+	join/2,
+	input_from/2]).
 
 %% gen_server callbacks
 -export([init/1, 
@@ -37,8 +44,8 @@
 	 terminate/2, 
 	 code_change/3]).
 
--include("log.hrl").
--include("../include/gsms.hrl").
+%% testing
+-export([dump/0]).
 
 -define(SERVER, ?MODULE). 
 	
@@ -95,6 +102,11 @@ input_from(BNumber, Sms) ->
 		[BNumber, Sms]),
     ?SERVER ! {input_from, BNumber, Sms},
     ok.
+
+%% Test functions
+%% @private
+dump() ->
+    gen_server:call(?SERVER, dump).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -192,6 +204,23 @@ handle_call({join,Pid,BNumber,Attributes}, _From, State) ->
 		    {reply, {error,ealready}, State}
 	    end
     end;
+handle_call(dump, _From, State=#state {subs = Subs, ifs= Ifs}) ->
+    io:format("LoopData:\n", []),
+    io:format("Subscriptions:\n", []),
+    lists:foreach(fun(_Sub=#subscription {pid = Pid, ref = Ref, filter = F}) ->
+			  io:format("pid ~p, ref ~p, filter ~p~n",
+				    [Pid, Ref, F]) 
+		  end, 
+		  Subs),
+    io:format("Interfaces:\n", []),
+    lists:foreach(fun(_If=#interface {pid = Pid, mon = Ref, 
+				      bnumber = B, attributes = A}) ->
+			  io:format("pid ~p, ref ~p, bnumber ~p, attributes ~p~n",
+				    [Pid, Ref, B, A]) 
+		  end, 
+		  Ifs),
+    {reply, ok, State};
+
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
