@@ -497,7 +497,7 @@ handle_info(scan_input, State) ->
 	      fun(Ix) ->
 		      Event = {cmti,[{"store","SM"},{"index",Ix}]},
 		      Pid ! {gsms_event,Ref,Event}
-	      end, Ixs),
+	      end, expand_index_list(Ixs)),
 	    {noreply, State};
 	Reply ->
 	    lager:debug("list_indices reply ~p", [Reply]),
@@ -803,6 +803,13 @@ parse_index_list1([{')',_}|Ts],Iv,Acc) ->
     parse_index_lists1(Ts,[lists:reverse(Iv)|Acc]);
 parse_index_list1(_Ts,_Iv,_Acc) ->
     {error, {syntax_error,_Ts}}.
+
+expand_index_list([{I,J}|Is]) when is_integer(I),is_integer(J),I>=0,I=<J ->
+    lists:seq(I,J) ++ expand_index_list(Is);
+expand_index_list([I|Is]) when is_integer(I), I>=0 ->
+    [I|expand_index_list(Is)];
+expand_index_list([]) ->
+    [].
 
 cms_error(Code) when is_list(Code) ->
     Code ++ ": " ++ cms_error_string(list_to_integer(Code)).
