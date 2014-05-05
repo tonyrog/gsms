@@ -61,11 +61,16 @@
 	  pid     :: pid(),        %% interface pid
 	  mon     :: reference(),  %% monitor reference
 	  bnumber :: gsms_addr(),  %% modem msisdn
+	  rssi    = 99 :: integer(),  %% last known rssi value
 	  attributes = [] :: [{atom(),term()}]  %% general match keys
 	}).
 
+-define(DEFAULT_CSQ_IVAL, 5000).
+
 -record(state, 
 	{
+	  csq_ival = ?DEFAULT_CSQ_IVAL,
+	  csq_tmr,
 	  subs = [] :: [#subscription{}],
 	  ifs  = [] :: [#interface{}]
 	}).
@@ -133,9 +138,11 @@ start_link(Args) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init(_Args) ->
+init(Args) ->
+    Csq_ival = proplists:get_value(csq_ival, Args, ?DEFAULT_CSQ_IVAL),
+    Csq_tmr  = erlang:start_timer(Csq_ival, self(), csq),
     process_flag(trap_exit, true),
-    {ok, #state{}}.
+    {ok, #state{ csq_ival=Csq_ival, csq_tmr=Csq_tmr}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -269,6 +276,39 @@ handle_info({input_from, BNumber, Pdu}, State) ->
     lists:foreach(fun(S) -> match_filter(S, BNumber, Pdu) end, 
 		  State#state.subs),
     {noreply, State};
+handle_info({timeout, Tmr, csq}, State) when State#state.csq_tmr =:= Tmr ->
+    Is =
+	lists:map(
+	  fun(I) ->
+		  R = gsms_0705:get_signal_strength(I#interface.pid),
+		  lager:debug("csq result: ~p\n", [R]),
+		  case R of
+		      {ok,"+CSQ:"++Params} ->
+			  case erl_scan:string(Params) of
+			      {ok,[{integer,_,Rssi}|_]} ->
+				  Pdu = {rssi, Rssi},
+				  BNumber = I#interface.bnumber,
+				  if I#interface.rssi =/= Rssi ->
+					  lists:foreach(
+					    fun(S) ->
+						    match_filter(S,BNumber,Pdu)
+					    end, State#state.subs),
+					  I#interface { rssi = Rssi };
+				     true ->
+					  I
+				  end;
+			      _Error ->
+				  lager:error("unable to read rssi: ~p",
+					      [_Error]),
+				  I
+			  end;
+		      _Error ->
+			  lager:error("unable to read rssi: ~p",[_Error]),
+			  I
+		  end
+	  end, State#state.ifs),
+    Csq_tmr  = erlang:start_timer(State#state.csq_ival, self(), csq),
+    {noreply, State#state { ifs = Is, csq_tmr=Csq_tmr }};
 handle_info({'EXIT', Pid, Reason}, State) ->
     case lists:keytake(Pid, #interface.pid, State#state.ifs) of
 	{value,_If,Ifs} ->
@@ -347,8 +387,12 @@ match({'or',A,B}, BNum, Sms) ->
 match({bnumber,Addr}, BNum, _Sms) -> 
     %% receiving modem
     match_addr(Addr, BNum);
-match(Match, _BNum, Sms) ->
-    match_sms(Match, Sms).
+match(Match, _BNum, Sms) when is_record(Sms,gsms_deliver_pdu) ->
+    match_sms(Match, Sms);
+match({rssi,true}, _BNum, {rssi,_}) ->
+    true;
+match({rssi,false}, _BNum, _)->
+    false.
 
 match_clause([A|As], BNum, Sms) ->
     case match(A, BNum, Sms) of
