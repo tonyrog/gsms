@@ -65,11 +65,9 @@
 	  attributes = [] :: [{atom(),term()}]  %% general match keys
 	}).
 
--define(DEFAULT_CSQ_IVAL, 5000).
-
 -record(state, 
 	{
-	  csq_ival = ?DEFAULT_CSQ_IVAL,
+	  csq_ival = 0,
 	  csq_tmr,
 	  subs = [] :: [#subscription{}],
 	  ifs  = [] :: [#interface{}]
@@ -139,8 +137,11 @@ start_link(Args) ->
 %% @end
 %%--------------------------------------------------------------------
 init(Args) ->
-    Csq_ival = proplists:get_value(csq_ival, Args, ?DEFAULT_CSQ_IVAL),
-    Csq_tmr  = erlang:start_timer(Csq_ival, self(), csq),
+    Csq_ival = proplists:get_value(csq_ival, Args, 0),
+    Csq_tmr  = if is_integer(Csq_ival), Csq_ival > 0 ->
+                    erlang:start_timer(Csq_ival, self(), csq);
+		  true -> undefined
+	       end,
     process_flag(trap_exit, true),
     {ok, #state{ csq_ival=Csq_ival, csq_tmr=Csq_tmr}}.
 
@@ -307,7 +308,11 @@ handle_info({timeout, Tmr, csq}, State) when State#state.csq_tmr =:= Tmr ->
 			  I
 		  end
 	  end, State#state.ifs),
-    Csq_tmr  = erlang:start_timer(State#state.csq_ival, self(), csq),
+    Csq_ival = State#state.csq_ival,
+    Csq_tmr  = if is_integer(Csq_ival), Csq_ival > 0 ->
+                    erlang:start_timer(Csq_ival, self(), csq);
+		  true -> undefined
+	       end,
     {noreply, State#state { ifs = Is, csq_tmr=Csq_tmr }};
 handle_info({'EXIT', Pid, Reason}, State) ->
     case lists:keytake(Pid, #interface.pid, State#state.ifs) of
@@ -434,7 +439,9 @@ match_sms({anumber,Addr}, Sms) ->
 match_sms({smsc,Addr}, Sms) ->
     match_addr(Addr, Sms#gsms_deliver_pdu.smsc);
 match_sms({reg_exp, RegExp}, Sms) ->
-    match_body(RegExp, Sms#gsms_deliver_pdu.ud).
+    match_body(RegExp, Sms#gsms_deliver_pdu.ud);
+match_sms({rssi,_}, _Sms) ->
+    false.
 
 
 %% Add some more smart matching here to select international / national
