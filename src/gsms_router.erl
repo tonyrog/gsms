@@ -285,7 +285,7 @@ handle_info({timeout, Tmr, csq}, State) when State#state.csq_tmr =:= Tmr ->
 		  case R of
 		      {ok,"+CSQ:"++Params} ->
 			  case erl_scan:string(Params) of
-			      {ok,[{integer,_,Rssi}|_]} ->
+			      {ok,[{integer,_,Rssi}|_],_} ->
 				  Pdu = {rssi, Rssi},
 				  BNumber = I#interface.bnumber,
 				  if I#interface.rssi =/= Rssi ->
@@ -391,7 +391,7 @@ match(Match, _BNum, Sms) when is_record(Sms,gsms_deliver_pdu) ->
     match_sms(Match, Sms);
 match({rssi,true}, _BNum, {rssi,_}) ->
     true;
-match({rssi,false}, _BNum, _)->
+match(_, _BNum, _)->
     false.
 
 match_clause([A|As], BNum, Sms) ->
