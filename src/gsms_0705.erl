@@ -512,13 +512,8 @@ handle_info(send, State) ->
 	    Hex = gsms_codec:binary_to_hex(Bin),
 	    Len = (length(Hex)-2) div 2,
 	    Reply =
-		case gsms_uart:ats(State#state.drv,
-				  "+CMGS="++integer_to_list(Len)) of
-		    ready_to_send ->
-			gsms_uart:atd(State#state.drv,Hex);
-		    Error ->
-			Error
-		end,
+		gsms_uart:atd(State#state.drv,
+			      "+CMGS="++integer_to_list(Len),Hex),
 	    lager:debug("send status segment ~w of ~w response=~p\n", 
 			[I,N,Reply]),
 	    %% Fixme handle Reply=error!!! cancel rest of segments etc
@@ -533,14 +528,8 @@ handle_info(send, State) ->
 	    Bin = gsms_codec:encode_sms(Pdu),
 	    Hex = gsms_codec:binary_to_hex(Bin),
 	    Len = (length(Hex)-2) div 2,
-	    Reply =
-		case gsms_uart:ats(State#state.drv,
-				   "+CMGW="++integer_to_list(Len)) of
-		    ready_to_send ->
-			gsms_uart:atd(State#state.drv,Hex);
-		    Error ->
-			Error
-		end,
+	    Reply = gsms_uart:atd(State#state.drv,
+				  "+CMGW="++integer_to_list(Len),Hex),
 	    lager:debug("wrote status segment ~w of ~w response=~p\n", 
 			[I,N,Reply]),
 	    %% Fixme handle Reply=error!!! cancel rest of segments etc
@@ -738,11 +727,7 @@ drv_send_message(Drv,Opts,Body) ->
 		      Bin = gsms_codec:encode_sms(Pdu),
 		      Hex = gsms_codec:binary_to_hex(Bin),
 		      Len = (length(Hex)-2) div 2,
-		      case gsms_uart:ats(Drv,"+CMGS="++integer_to_list(Len)) of
-			  ready_to_send -> 
-			      gsms_uart:atd(Drv,Hex);
-			  Error -> Error
-		      end
+		      gsms_uart:atd(Drv,"+CMGS="++integer_to_list(Len),Hex)
 	      end, PduList),
 	    ok;
 	Error ->
@@ -759,11 +744,7 @@ drv_write_message(Drv,Opts,Body) ->
 		      Bin = gsms_codec:encode_sms(Pdu),
 		      Hex = gsms_codec:binary_to_hex(Bin),
 		      Len = (length(Hex)-2) div 2,
-		      case gsms_uart:ats(Drv,"+CMGW="++integer_to_list(Len)) of
-			  ready_to_send ->
-			      gsms_uart:atd(Drv,Hex);
-			  Error -> Error
-		      end
+		      gsms_uart:atd(Drv,"+CMGW="++integer_to_list(Len),Hex)
 	      end, PduList),
 	    ok;
 	Error ->

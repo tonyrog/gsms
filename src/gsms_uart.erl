@@ -37,7 +37,7 @@
 	 subscribe/2,
 	 unsubscribe/2,
 	 setopts/2,
-	 at/2, ats/2, atd/2, send/2]).
+	 at/2, atd/3, send/2]).
 
 %% Option processing
 -export([options/0,
@@ -79,6 +79,13 @@
 	  pattern
 	}).
 
+-record(qent,
+	{
+	  from,     %% caller tag
+	  mon,      %% caller/pid monitor 
+	  command   %% call or cast
+	}).
+
 -record(ctx,
 	{
 	  uart,           %% serial port descriptor
@@ -88,9 +95,9 @@
  	  opts=[],        %% sms options
 	  command="",     %% last command
 	  reply=[],       %% list of reply line data
-	  activity=none,  %% |at,ats,atd
 	  client,         %% last client
-	  queue,          %% request queue
+	  client_data,    %% ATD hex data if or undefined
+	  queue = [],     %% request queue [#qent{}]
 	  reply_timer,    %% timeout waiting for reply
 	  reopen_timer,   %% timer ref
 	  subs = []       %% #subscription{}
@@ -198,13 +205,9 @@ setopts(Drv,Opts) when is_list(Opts) ->
 at(Drv,Command) ->
     gen_server:call(Drv, {at,Command}).
 
-%% at command that could lead to data-enter state
-ats(Drv,Command) ->
-    gen_server:call(Drv, {ats,Command}, 20000).
-
-%% send data in data-enter state
-atd(Drv, Hex) ->
-    gen_server:call(Drv, {atd,Hex}, 20000).
+%% send command and data in data-enter state
+atd(Drv, Command, Hex) ->
+    gen_server:call(Drv, {atd,Command,Hex}, 20000).
 
 send(Drv, Data) ->
     gen_server:call(Drv, {send,Data}).
@@ -247,7 +250,7 @@ init([Caller,Opts]) ->
 		       uopts  = Uopts1,
 		       caller = Caller,
 		       opts   = Gopts0,
-		       queue  = queue:new()
+		       queue  = []
 		     },
 	    case open(S) of
 		{ok, S1} -> {ok, S1};
@@ -312,20 +315,27 @@ handle_call({subscribe,Pid,Pattern},_From,Ctx=#ctx { subs=Subs}) ->
     Mon = erlang:monitor(process, Pid),
     Subs1 = [#subscription { pid = Pid, mon = Mon, pattern = Pattern}|Subs],
     {reply, {ok,Mon}, Ctx#ctx { subs = Subs1}};
+
 handle_call({unsubscribe,Ref},_From,Ctx) ->
     erlang:demonitor(Ref),
     Ctx1 = remove_subscription(Ref,Ctx),
     {reply, ok, Ctx1};
 handle_call(stop, _From, Ctx) ->
     {stop, normal, ok, Ctx};
+
+
 %% other commands we queue if gsms_uart is busy processing command
 handle_call(Call,From,Ctx=#ctx {client = Client}) 
   when Client =/= undefined andalso Call =/= stop ->
     %% Driver is busy ..
     lager:debug("handle_call: Driver busy, store call ~p", [Call]),
     %% set timer already here? probably!
-    Q = queue:in({call,Call,From}, Ctx#ctx.queue),
-    {noreply, Ctx#ctx { queue = Q }};
+    {Pid,_Tag} = From,
+    Mon = erlang:monitor(process, Pid),
+    Timeout=proplists:get_value(reply_timeout,Ctx#ctx.opts,5000),
+    QE = #qent { from=From, mon=Mon, command={call,Call}},
+    Q = Ctx#ctx.queue ++ [QE],
+    {noreply, Ctx#ctx { queue = Q }, Timeout};
 
 handle_call({at,Command},From,Ctx) ->
     lager:debug("handle_call: command ~p", [Command]),
@@ -343,8 +353,9 @@ handle_call({at,Command},From,Ctx) ->
 		    %% Wait for confirmation
 		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,5000),
 		    TRef = erlang:start_timer(Tm, self(), reply),
-		    {noreply,Ctx#ctx {command = Command,client=From,
-				      activity = at,
+		    {noreply,Ctx#ctx {command = Command,
+		    		      client=From,
+		    		      client_data = undefined,
 				      reply = [],
 				      reply_timer = TRef}};
 		Other ->
@@ -353,7 +364,7 @@ handle_call({at,Command},From,Ctx) ->
 	    end
     end;
 
-handle_call({ats,Command},From,Ctx) ->
+handle_call({atd,Command,Hex},From,Ctx) ->
     lager:debug("handle_call: command ~p", [Command]),
     case Ctx#ctx.uart of
 	simulated ->
@@ -372,8 +383,9 @@ handle_call({ats,Command},From,Ctx) ->
 		    %% Wait for confirmation
 		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,5000),
 		    TRef = erlang:start_timer(Tm, self(), reply),
-		    {noreply,Ctx#ctx {command  = Command,client=From,
-				      activity = ats,
+		    {noreply,Ctx#ctx {command  = Command,
+		                      client=From,
+				      client_data=Hex,
 				      reply = [],
 				      reply_timer = TRef}};
 		Other ->
@@ -382,35 +394,6 @@ handle_call({ats,Command},From,Ctx) ->
 		    {reply, Other, Ctx}
 	    end
     end;
-%%
-%% Send DATA command end with ^Z
-%% Hmm how many lines per row ?
-%%
-handle_call({atd,Hex},From,Ctx) ->
-    lager:debug("handle_call: emit ~p", [Hex]),
-    case Ctx#ctx.uart of
-	simulated ->
-	    lager:info("simulated output ~p\n", [Hex]),
-	    {reply, ok, Ctx};
-	undefined ->
-	    lager:info("~p: No port defined yet.\n", [?MODULE]),
-	    {reply, {error,no_port}, Ctx};
-	U ->
-	    case uart:send(U, [Hex,?CTRL_Z]) of
-		ok ->
-		    lager:debug("command: sent\n", []),
-		    %% Wait for confirmation
-		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,10000),
-		    TRef = erlang:start_timer(Tm, self(), reply),
-		    {noreply,Ctx#ctx {command=Hex,client=From,
-				      activity = atd,
-				      reply = [],
-				      reply_timer = TRef}};
-		Other ->
-		    lager:debug("command: send failed, reason ~p", [Other]),
-		    {reply, Other, Ctx}
-	    end
-    end;    
 
 handle_call({send,Data},_From,Ctx) ->
     lager:debug("handle_call: send ~p", [Data]),
@@ -444,7 +427,9 @@ handle_call(_Request, _From, Ctx) ->
 handle_cast(Cast, Ctx=#ctx {uart = U, client=Client})
   when U =/= undefined, Client =/= undefined ->
     lager:debug("handle_cast: Driver busy, store cast ~p", [Cast]),
-    Q = queue:in({cast,Cast}, Ctx#ctx.queue),
+    %% FIXME: add timer when/if we start using this
+    QE = #qent { from=undefined, mon=undefined, command = {cast,Cast}},
+    Q = Ctx#ctx.queue ++ [QE],
     {noreply, Ctx#ctx { queue = Q }};
 
 handle_cast(_Msg, Ctx) ->
@@ -486,9 +471,19 @@ handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
     case trim(Data) of
 	"" -> %% empty line (may add this later?)
 	    {noreply, Ctx};
-	">" when Ctx#ctx.activity =:= ats ->
+	">" when Ctx#ctx.client_data =/= undefined ->
 	    uart:setopts(U, [{active,true},{packet,line}]),
-	    reply(ready_to_send, Ctx);
+	    case uart:send(U, [Ctx#ctx.client_data,?CTRL_Z]) of
+		ok ->
+		    lager:debug("data sent ~p\n", [Ctx#ctx.client_data]),
+		    stop_timer(Ctx#ctx.reply_timer),
+		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,10000),
+		    TRef = start_timer(Tm, reply),
+		    {noreply,Ctx#ctx { reply_timer=TRef }};
+		Error ->
+		    lager:debug("command: send failed, reason ~p", [Error]),
+		    reply(Error, Ctx)
+            end;
 	"OK" ->
 	    reply(ok, Ctx);
 	"ERROR" ->
@@ -551,8 +546,11 @@ handle_info({timeout,Ref,reopen}, Ctx) when Ctx#ctx.reopen_timer =:= Ref ->
 handle_info({'DOWN',Ref,process,_Pid,_Reason},Ctx) ->
     lager:debug("handle_info: subscriber ~p terminated: ~p", 
 	 [_Pid, _Reason]),
-    Ctx1 = remove_subscription(Ref,Ctx),
-    {noreply, Ctx1};
+    case lists:keytake(Ref,#qent.mon, Ctx#ctx.queue) of
+	false -> remove_subscription(Ref,Ctx);
+	{value,_QE,Q} ->
+	    {noreply,Ctx#ctx { queue=Q}}
+    end;
 handle_info(_Info, Ctx) ->
     lager:debug("handle_info: Unknown info ~p", [_Info]),
     {noreply, Ctx}.
@@ -635,7 +633,7 @@ open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
 		Ival ->
 		    lager:debug("open: uart could not be opened, will try again"
 				" in ~p millisecs.\n", [Ival]),
-		    Reopen_timer = erlang:start_timer(Ival, self(), reopen),
+		    Reopen_timer = start_timer(Ival, reopen),
 		    {ok, Ctx#ctx { reopen_timer = Reopen_timer }}
 	    end;
 	    
@@ -675,11 +673,23 @@ flush_uart(U,T) ->
 	    ok
     end.
 
+start_timer(0, _Message) -> undefined;
+start_timer(infinity, _Message) -> undefined;
+start_timer(Time, Message) -> erlang:start_timer(Time, self(), Message).
+
+stop_timer(undefined) -> ok;
+stop_timer(Ref) when is_reference(Ref) -> 
+   erlang:cancel_timer(Ref),
+   receive
+       {timeout,Ref,_} -> ok
+   after 0 -> 
+       ok
+   end.
 
 
 reply(Tag, Ctx) ->
     if Ctx#ctx.client =/= undefined ->
-	    erlang:cancel_timer(Ctx#ctx.reply_timer),
+	    stop_timer(Ctx#ctx.reply_timer),
 	    case lists:reverse(Ctx#ctx.reply) of
 		[] ->
 		    gen_server:reply(Ctx#ctx.client, Tag);
@@ -689,8 +699,8 @@ reply(Tag, Ctx) ->
 		    gen_server:reply(Ctx#ctx.client, {Tag,MultiResponse})
 	    end,
 	    Ctx1 = Ctx#ctx { client=undefined, 
+			     client_data = undefined,
 			     reply_timer=undefined,
-			     activity = none,
 			     command = "", reply=[] },
 	    next_command(Ctx1);
        true ->
@@ -698,20 +708,21 @@ reply(Tag, Ctx) ->
     end.
 
 next_command(Ctx) ->
-    case queue:out(Ctx#ctx.queue) of
-	{{value,{call,Call,From}}, Q1} ->
+    case Ctx#ctx.queue of
+	[#qent{from=From,mon=Mon,command={call,Call}} | Q1] ->
 	    case handle_call(Call, From, Ctx#ctx { queue=Q1}) of
 		{reply,Reply,Ctx1} ->
 		    gen_server:reply(From,Reply),
-		    {noreply,Ctx1};
+		    erlang:demonitor(Mon,[flush]),
+		    next_command(Ctx1);
 		CallResult ->
 		    CallResult
 	    end;
-	{{value,{cast,Cast}}, Q1} ->
+	[#qent {command={cast,Cast}} | Q1] ->
 	    handle_cast(Cast, Ctx#ctx { queue=Q1});
-	{empty, Q1} ->
+	[] ->
 	    uart:setopts(Ctx#ctx.uart, [{active,true}]),
-	    {noreply, Ctx#ctx { queue=Q1}}
+	    {noreply, Ctx#ctx { queue=[]}}
     end.
 
 trimhd([$\s|Cs]) -> trimhd(Cs);
