@@ -5,5 +5,5 @@
   {registered, [gsms_router]},
   {mod, {gsms_app,[]}},
   {env, []},
-  {applications, [kernel,stdlib,uart]}
+  {applications, [kernel,stdlib,lager,uart]}
  ]}.
