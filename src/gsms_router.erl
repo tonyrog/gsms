@@ -396,6 +396,8 @@ match(Match, _BNum, Sms) when is_record(Sms,gsms_deliver_pdu) ->
     match_sms(Match, Sms);
 match({rssi,true}, _BNum, {rssi,_}) ->
     true;
+match({creg,true}, _BNum, {creg,_}) ->
+    true;
 match(_, _BNum, _)->
     false.
 
@@ -441,6 +443,8 @@ match_sms({smsc,Addr}, Sms) ->
 match_sms({reg_exp, RegExp}, Sms) ->
     match_body(RegExp, Sms#gsms_deliver_pdu.ud);
 match_sms({rssi,_}, _Sms) ->
+    false;
+match_sms({creg,_}, _Sms) ->
     false.
 
 

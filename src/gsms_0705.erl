@@ -444,6 +444,16 @@ handle_info({gsms_event,Ref,Event}, State) when State#state.ref =:= Ref ->
 		    lager:info("read_message failed: ~p\n", [Error]),
 		    {noreply, State}
 	    end;
+	{data,"+CREG:"++Params} ->
+	    case erl_scan:string(Params) of
+		{ok,[{integer,_,Status}|_],_} ->
+		    %% we do not use the the access value
+		    gsms_router:input_from(State#state.bnumber,{creg,Status}),
+		    {noreply, State};
+		_ ->
+		    lager:info("event ignored ~p\n", [Event]),
+		    {noreply, State}
+	    end;
 	_ ->
 	    lager:info("event ignored ~p\n", [Event]),
 	    {noreply, State}

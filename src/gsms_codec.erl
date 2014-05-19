@@ -12,6 +12,9 @@
 -export([decode_in/1, decode_in_hex/1]).
 -export([decode_out/1, decode_out_hex/1]).
 -export([hex_to_binary/1]).
+-export([is_valid_scts/1]).
+-export([decode_dcs/1]).
+
 -import(lists, [reverse/1]).
 
 -include("log.hrl").
