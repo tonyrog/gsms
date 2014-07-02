@@ -87,10 +87,10 @@ unsubscribe(Ref) ->
 
 %%%===================================================================
 start() ->
-    call([lager,ale,uart,gsms], start).
+    call([lager,uart,gsms], start).
 
 stop() ->
-    call([gsms,uart,ale,lager], stop).
+    call([gsms,uart,lager], stop).
 
 call([App|Apps], F) ->
     error_logger:info_msg("~p: ~p\n", [F,App]),
