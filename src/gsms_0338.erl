@@ -11,9 +11,9 @@
 -export([encode/1, encode/2, encode_char/1]).
 
 decode(Bin) when is_binary(Bin) ->
-    decode_list(binary_to_list(Bin));
+    decode(binary_to_list(Bin));
 decode(Cs) when is_list(Cs) ->
-    decode_list(Cs).
+    lists:flatten(decode_list(Cs)).
 
 %% 
 decode_list([16#1B,C|Cs]) ->
@@ -179,7 +179,8 @@ decode_char(C) ->
 	16#7C -> 16#00F6; %%  LATIN SMALL LETTER O WITH DIAERESIS
 	16#7D -> 16#00F1; %%  LATIN SMALL LETTER N WITH TILDE
 	16#7E -> 16#00FC; %%  LATIN SMALL LETTER U WITH DIAERESIS
-	16#7F -> 16#00E0  %%  LATIN SMALL LETTER A WITH GRAVE
+	16#7F -> 16#00E0; %%  LATIN SMALL LETTER A WITH GRAVE
+    _ -> []
     end.
 
 encode(Data) ->
@@ -366,5 +367,6 @@ encode_char(C) ->
 	16#007E -> [16#1B,16#3D];  %%  TILDE
 	16#005D -> [16#1B,16#3E];  %%  RIGHT SQUARE BRACKET
 	16#007C -> [16#1B,16#40];  %%  VERTICAL LINE
-	16#20AC -> [16#1B,16#65]   %%  EURO SIGN    
+	16#20AC -> [16#1B,16#65];  %%  EURO SIGN    
+    _ -> []
     end.
