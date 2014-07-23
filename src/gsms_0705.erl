@@ -627,8 +627,10 @@ drv_set_csms_pdu_mode(Drv) ->
 -spec drv_set_msgboxes(Drv::uart_driver(), list() | undefined) -> ok.
 
 drv_set_msgboxes(_Drv, undefined) ->
-    ok;
+    {ok, ""};
 drv_set_msgboxes(Drv, C) ->
+    {ok, Resp} = gsms_uart:at(Drv,"+CPMS=?"),
+    lager:debug("sms_msgboxes: ~s", [Resp]),
     Fmt = "+CPMS=~p,~p,~p",
     Msg = lists:flatten(io_lib:format(Fmt, [C, C, C])),
     gsms_uart:at(Drv, Msg).

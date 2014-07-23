@@ -75,4 +75,4 @@ init(Args) ->
 		  IfList
 	  end),
     ?info("~p: init: starting interfaces ~p", [?MODULE, Interfaces]),
-    {ok,{{one_for_one,3,5}, Interfaces}}.
+    {ok,{{one_for_one,10,5}, Interfaces}}.
