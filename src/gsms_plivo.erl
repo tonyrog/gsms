@@ -21,7 +21,7 @@
 %% HTTP callback
 -export([handle_body/4]).
 
--export([t/0, t1/0, trace/0]).
+-export([trace/0]).
 -export([test_new/0, test_new/2, simtest/1]).
 
 -record(st, {account,
@@ -42,30 +42,6 @@
 -include("gsms.hrl").
 -include("log.hrl").
 -define(mandatory, '$mandatory').
-
-t() ->
-    t("https://api.plivo.com", "https://uwiger.ddns.net:9100").
-
-t(SendURI, RecvURI) ->
-    application:ensure_all_started(gsms),
-    new([{acct,      "plivo"},
-	 {auth_id,   "MANMFINTQXZTK5N2JLMZ"},
-	 {auth_token,"N2ViNzVmMDJiY2NlZGMyMjliODc1NDBmZDAyMDNl"},
-	 {src_number,"+46769447547"},
-	 {send_uri,  SendURI},
-	 {recv_uri,  RecvURI},
-	 {recv_port, get_port(RecvURI)}]).
-
-t1() ->
-    t("https://uwiger.ddns.net:9100", "https://localhost:9110/received").
-
-get_port(URI) ->
-    case re:run(URI, ":([0-9]+)", [{capture,[1],list}]) of
-	{match, [PortStr]} ->
-	    list_to_integer(PortStr);
-	_ ->
-	    error(cannot_extract_port)
-    end.
 
 start_link(_Id, Opts) ->
     {ok, new(Opts)}.

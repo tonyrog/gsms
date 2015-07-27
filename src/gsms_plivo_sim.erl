@@ -16,62 +16,52 @@
 -include_lib("exo/include/exo_http.hrl").
 -include("log.hrl").
 
+-define(DEFAULT_PORT, 9100).
+
 %% TODO: A bunch of duplication in the records. Should be cleaned up.
 %% TODO: Should be enough with one HTTP server instance serving all accts.
--record(service, {type,
+-record(service, {acct,
+		  type,
 		  uri,
 		  conn_opts = [],
 		  numbers = [],
-		  auth,
+		  auth_token,
+		  auth_string,
 		  pid}).
 -record(st, {services = [],
+	     server,
+	     opts,
 	     notify = []}).
 
--record(server, {parent,
-		 uri,
-		 account,
-		 auth_token,
-		 auth_str}).
+-record(server, {parent}).
 
 -define(mandatory, '$mandatory').
 
 test() ->
     application:ensure_all_started(gsms),
     start_link([{services, [{plivo, [{type, plivo_sim},
-				     {connection,
-				      [
-				       {port, 9100},
-				       {uri, "http://localhost:9100"},
-				       {account, "myacct"},
-				       {auth, "myauth"}
-				      ]}
+				     {port, 9100},
+				     {uri, "http://localhost:9100"},
+				     {account, "myacct"},
+				     {auth, "myauth"}
 				    ]}
 			   ]}
 	       ]).
 
 simtest() ->
     application:ensure_all_started(gsms),
-    R = start_link([{services,
-		     [{s1, [{type, plivo_sim},
-			    {numbers, ["111"]},
-			    {connection,
-			     [{port, 9100},
-			      {uri, "http://localhost:9200"},
-			      {account, "acct1"},
-			      {auth, "auth1"}]}]},
-		      {s2, [{type, plivo_sim},
-			    {numbers, ["222"]},
-			    {connection,
-			     [{port, 9110},
-			      {uri, "http://localhost:9300"},
-			      {account, "acct2"},
-			      {auth, "auth2"}]}]}]}]),
-    dbg:tracer(),
-    dbg:tpl(?MODULE, x),
-    dbg:tp(exo_http, x),
-    dbg:tp(gsms_plivo, x),
-    dbg:p(all,[c]),
-    R.
+    start_link([{port, 9100},
+		{services,
+		 [{s1, [{type, plivo_sim},
+			{numbers, ["111"]},
+			{uri, "http://localhost:9200"},
+			{account, "acct1"},
+			{auth, "auth1"}]},
+		  {s2, [{type, plivo_sim},
+			{numbers, ["222"]},
+			{uri, "http://localhost:9300"},
+			{account, "acct2"},
+			{auth, "auth2"}]}]}]).
 
 start_link(Opts) ->
     case lists:keyfind(reg_name, 1, Opts) of
@@ -88,9 +78,10 @@ send_message(Server, Opts, Body) ->
     call(Server, {send_message, Opts, Body}).
 
 init(Opts) ->
-    S0 = #st{},
+    {ok, Pid} = start_server(Opts),
+    S0 = #st{server = Pid, opts = Opts},
     S = case lists:keyfind(services, 1, Opts) of
-	    false -> S0;
+	    false -> S0#st{server = Pid};
 	    {_, Svcs} ->
 		lists:foldl(
 		  fun({Svc, SvcOpts}, Sx) ->
@@ -118,8 +109,8 @@ handle_call({send_message, Opts, Body}, _From, S) ->
 handle_call({add_service, Svc, Opts}, _From, S) ->
     {Reply, S1} = do_add_service(Svc, Opts, S),
     {reply, Reply, S1};
-handle_call({authorize,Acct,Token}, _, #st{services = Svcs} = S) ->
-    {reply, auth_service(Svcs, Acct, Token), S};
+handle_call({authorize,AuthStr}, _, #st{services = Svcs} = S) ->
+    {reply, lists:keyfind(AuthStr, #service.auth_string, Svcs), S};
 handle_call(_Req, _From, S) ->
     {reply, {error, badarg}, S}.
 
@@ -144,8 +135,8 @@ code_change(_FromVsn, State, _Extra) ->
 call(Server, Req) ->
     gen_server:call(Server, Req).
 
-ask_authorize(Pid, Acct, Token) ->
-    call(Pid, {authorize, Acct, Token}).
+ask_authorize(Pid, AuthStr) ->
+    call(Pid, {authorize, AuthStr}).
 
 auth_service([#service{conn_opts = Opts}|T], Acct, Token) ->
     case lists:member({account,Acct}, Opts) of
@@ -167,7 +158,7 @@ maybe_notify(Opts, UUID, #st{notify = Nfy} = S) ->
 
 notify({Event, UUID, Params0}, Number, S) ->
     case find_service(Number, S) of
-	#service{uri = URI, auth = Token} ->
+	#service{uri = URI, auth_token = Token} ->
 	    Params =
 		[{"Status", status(Event)},
 		 {"ParentMessageUUID", UUID},
@@ -187,7 +178,7 @@ message_params(Opts, Body, #st{} = S) ->
 					{to, ?mandatory},
 					{uuid, fun gsms_plivo:uuid/0}]],
     case find_service(To, S) of
-	#service{uri = URI, auth = Token} ->
+	#service{uri = URI, auth_token = Token} ->
 	    Params = [
 		      {"To", no_plus(To)},
 		      {"From", no_plus(From)},
@@ -229,43 +220,42 @@ headers(Sig) ->
      {"X-Plivo-Signature", Sig}].
 
 do_add_service(_Svc, Opts, S) ->
-    [Type, ConnOpts, Numbers] =
+    [Type, ConnOpts, Numbers, Acct, URI, Auth] =
 	[gsms_lib:get_opt(K, Opts, Def)
 	 || {K, Def} <- [{type, plivo_sim},
 			 {connection, []},
-			 {numbers, []}]],
+			 {numbers, []},
+			 {account, ?mandatory},
+			 {uri, ?mandatory},
+			 {auth, ?mandatory}]],
+    AuthStr = exo_http:auth_basic_encode(Acct, Auth),
     SvcRec = #service{type = Type,
 		      conn_opts = ConnOpts,
-		      numbers = [no_plus(N) || N <- Numbers]},
-    SvcRec1 = start_service(SvcRec),
-    {ok, S#st{services = [SvcRec1 | S#st.services]}}.
+		      numbers = [no_plus(N) || N <- Numbers],
+		      acct = Acct,
+		      uri = URI,
+		      auth_token = Auth,
+		      auth_string = AuthStr},
+    {ok, S#st{services = [SvcRec | S#st.services]}}.
 
-start_service(#service{type = plivo_sim, conn_opts = Opts} = S) ->
-    [Port, Acct, URI, Auth] =
-	[gsms_lib:get_opt(K, Opts, Def) || {K, Def} <- [{port, ?mandatory},
-							{account, ?mandatory},
-							{uri, ?mandatory},
-							{auth, ?mandatory}]],
-    {ok, Pid} = start_server(Port, URI, Acct, Auth),
-    S#service{pid = Pid, uri = URI, auth = Auth}.
-
-start_server(Port, URI, Acct, Auth) ->
-    Srv = #server{parent = self(),
-		  uri = URI,
-		  account = Acct,
-		  auth_token = Auth,
-		  auth_str = exo_http:auth_basic_encode(Acct, Auth)},
+start_server(Opts) ->
+    Port = gsms_lib:get_opt(port, Opts, ?DEFAULT_PORT),
+    Srv = #server{parent = self()},
     exo_http_server:start_link(Port, [{request_handler,
 				       {?MODULE, handle_body, [Srv]}}]).
 
-handle_body(Socket, Request, Body, #server{parent = P,
-					   uri = URI,
-					   account = Acct,
-					   auth_token = AuthTok,
-					   auth_str = AuthStr}) ->
+handle_body(Socket, Request, Body, #server{parent = P}) ->
     ?debug("Path = ~p~nBody = ~p~n",
 	   [(Request#http_request.uri)#url.path, Body]),
-    case valid_request(Request, Body, Acct, URI, AuthTok, AuthStr) of
+    case check_auth(Request, P) of
+	false ->
+	    response(Socket, authentication_failed, "");
+	#service{acct = Acct, auth_token = AuthTok, uri = URI} ->
+	    handle_body_(Socket, Request, Body, Acct, AuthTok, URI, P)
+    end.
+
+handle_body_(Socket, Request, Body, Acct, AuthTok, URI, P) ->
+    case valid_request(Request, Acct) of
 	false ->
 	    response(Socket, authentication_failed, "");
 	"Message" ->
@@ -299,26 +289,25 @@ handle_body(Socket, Request, Body, #server{parent = P,
 	    end
     end.
 
+check_auth(Request, P) ->
+    case get_basic_auth(Request) of
+	false -> false;
+	AuthStr ->
+	    case ask_authorize(P, AuthStr) of
+		false -> false;
+		Auth  -> Auth
+	    end
+    end.
+
 to_json(Struct) ->
     exo_json:encode(Struct).
 
-valid_request(#http_request{uri = #url{path = Path}} = R, _Body,
-	      Acct, _URI, _AuthTok, AuthStr) ->
-    case get_basic_auth(R) of
-	false ->
-	    io:fwrite("No auth data~n", []),
-	    false;
-	AuthStr ->
-	    io:fwrite("Authorized.~nR = ~p~n", [R]),
-	    case filename:split(Path) of
-		["/", "v1","Account",Acct,"Message"] ->
-		    "Message";
-		_Split ->
-		    io:fwrite("unrecognized: ~p~n", [_Split]),
-		    false
-	    end;
-	_OtherAuth ->
-	    io:fwrite("Wrong Auth (~p)~n", [_OtherAuth]),
+valid_request(#http_request{uri = #url{path = Path}}, Acct) ->
+    case filename:split(Path) of
+	["/", "v1","Account",Acct,"Message"] ->
+	    "Message";
+	_Split ->
+	    io:fwrite("unrecognized: ~p~n", [_Split]),
 	    false
     end.
 
