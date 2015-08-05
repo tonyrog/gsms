@@ -132,7 +132,8 @@
 	  send_delay :: timeout(),     %% delay between sending segments
 	  concat_seq  :: boolean(),    %% concat ref is sequence or random
 	  concat_8bit :: boolean(),    %% 8bit or 16bit
-	  attributes = [] :: [{atom(),term()}]
+	  attributes = [] :: [{atom(),term()}],
+      msgbox :: string()           %% storage where SMS should be stored
 	}).
 
 %%%===================================================================
@@ -255,11 +256,13 @@ start_link(Id, Opts) ->
 %% @end
 %%--------------------------------------------------------------------
 init([Id,Opts]) ->
-    State0 = #state { simpin = ?DEFAULT_SIMPIN,
-		      segment_timeout = ?DEFAULT_SEGMENT_TIMEOUT,
-		      send_delay = ?DEFAULT_SEND_DELAY,
-		      concat_seq = ?DEFAULT_CONCAT_SEQUENCE,
-		      concat_8bit = ?DEFAULT_CONCAT_8BIT },
+    State0 = #state{
+                simpin = ?DEFAULT_SIMPIN,
+                segment_timeout = ?DEFAULT_SEGMENT_TIMEOUT,
+                send_delay = ?DEFAULT_SEND_DELAY,
+                concat_seq = ?DEFAULT_CONCAT_SEQUENCE,
+                concat_8bit = ?DEFAULT_CONCAT_8BIT
+               },
     {Opts1,State1} = setopts(Opts, State0),
     {ok,Pid} = gsms_uart:start_link(Opts1),
     {ok,Ref} = gsms_uart:subscribe(Pid),  %% subscribe to all events
@@ -465,6 +468,7 @@ handle_info({gsms_uart, Pid, up}, State) when State#state.drv =:= Pid ->
     timer:sleep(100),        %% help?
     ok = drv_check_csms_capability(Pid),
     ok = drv_set_csms_pdu_mode(Pid),
+    {ok, _} = drv_set_msgboxes(Pid, State#state.msgbox),
     ok = drv_set_csms_notification(Pid),
     BNumber = if State#state.bnumber =:= "" ->
 		      case drv_get_msisdn(Pid) of
@@ -619,6 +623,17 @@ drv_check_csms_capability(Drv) ->
 
 drv_set_csms_pdu_mode(Drv) ->  
     gsms_uart:at(Drv,"+CMGF=0").
+
+-spec drv_set_msgboxes(Drv::uart_driver(), list() | undefined) -> ok.
+
+drv_set_msgboxes(_Drv, undefined) ->
+    {ok, ""};
+drv_set_msgboxes(Drv, C) ->
+    {ok, Resp} = gsms_uart:at(Drv,"+CPMS=?"),
+    lager:debug("sms_msgboxes: ~s", [Resp]),
+    Fmt = "+CPMS=~p,~p,~p",
+    Msg = lists:flatten(io_lib:format(Fmt, [C, C, C])),
+    gsms_uart:at(Drv, Msg).
 
 %% AT+CNMI=1,1,0,0,0 Set the new message indicators.
 %%
@@ -847,6 +862,8 @@ setopts([Opt|Opts], State, Opts1) ->
 	    setopts(Opts, State#state { concat_8bit = B }, Opts1);
 	{concat_seq, B} when is_boolean(B) ->
 	    setopts(Opts, State#state { concat_seq = B }, Opts1);
+	{msgbox, B} when is_list(B) ->
+	    setopts(Opts, State#state { msgbox = B }, Opts1);
 	_ ->
 	    setopts(Opts, State, [Opt|Opts1])
     end;

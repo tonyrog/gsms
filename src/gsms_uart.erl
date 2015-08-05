@@ -203,7 +203,7 @@ setopts(Drv,Opts) when is_list(Opts) ->
 
 %% normal at command
 at(Drv,Command) ->
-    gen_server:call(Drv, {at,Command}).
+    gen_server:call(Drv, {at,Command}, 20000).
 
 %% send command and data in data-enter state
 atd(Drv, Command, Hex) ->
