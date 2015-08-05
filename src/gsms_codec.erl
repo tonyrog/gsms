@@ -347,11 +347,11 @@ encode_vp(none, _) -> <<>>;
 encode_vp(relative, V) -> 
     Min_0  = V div 60,        %% number of minutes
     Hour_1 = Min_0 div 60,    %% number of hours
-    _Min_1  = Min_0 rem 60,   %% mintes with in the hour
+%%%   _Min_1  = Min_0 rem 60,   %% mintes with in the hour
     Day_2  = Hour_1 div 24,   %% days
-    _Hour_2 = Hour_1 rem 24,  %% hour with in day
+%%%    _Hour_2 = Hour_1 rem 24,  %% hour with in day
     Week_3 = Day_2 div 7,     %% weeks
-    _Day_3  = Day_2 rem 7,    %% day within week
+%%%    _Day_3  = Day_2 rem 7,    %% day within week
     if Week_3 >= 5, Week_3 =< 64 -> 
 	    <<((Week_3-5)+197)>>;
        Day_2  >= 2, Day_2 =< 30 ->
@@ -725,10 +725,10 @@ encode_ucs2([], _I, Acc) ->
 
 
 message_len(Cs) ->
-    message_len_auto_(Cs,0).
+    message_len(Cs, auto).
 
 message_len(Cs,auto) ->
-    message_len_auto_(Cs,0);
+    message_len_detect_(Cs,0);
 message_len(Cs,default) ->
     {default,message_len_default_(Cs,0)};
 message_len(Cs,octet) ->
@@ -737,17 +737,25 @@ message_len(Cs,ucs2) ->
     {ucs2,message_len_ucs2_(Cs,0)}.
 
 
-message_len_auto_(Cs,N) ->
-    try message_len_default_(Cs,N) of
+message_len_detect_(Cs,N) ->
+    case message_len_detect__(Cs,N) of
+	false -> {ucs2,message_len_ucs2_(Cs,N)};
 	Len7 -> {default,Len7}
-    catch
-	error:_ ->
-	    {ucs2,message_len_ucs2_(Cs,N)}
     end.
+
+message_len_detect__([C|Cs], Len) ->
+    case gsms_0338:encode_char(C) of
+	[_Esc,_Y] -> message_len_detect__(Cs, Len+2);
+	[] -> false;
+	_Y -> message_len_detect__(Cs, Len+1)
+    end;
+message_len_detect__([], Len) ->
+    Len.
 
 message_len_default_([C|Cs], Len) ->
     case gsms_0338:encode_char(C) of
 	[_Esc,_Y] -> message_len_default_(Cs, Len+2);
+	[] -> message_len_default_(Cs, Len+2);  %% non breaking space!
 	_Y -> message_len_default_(Cs, Len+1)
     end;
 message_len_default_([], Len) ->

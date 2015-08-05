@@ -14,12 +14,12 @@
 %%% KIND, either express or implied.
 %%%
 %%%---- END COPYRIGHT ---------------------------------------------------------
-%%% @author Malotte W Lönne <malotte@malotte.net>
+%%% @author Malotte W Lonne <malotte@malotte.net>
 %%% @copyright (C) 2013, Tony Rogvall
 %%% @doc
 %%%  sms interface supervisor
 %%%
-%%% Created: 2013 by Malotte W Lönne 
+%%% Created: 2013 by Malotte W Lonne 
 %%% @end
 
 -module(gsms_if_sup).

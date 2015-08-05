@@ -8,14 +8,15 @@
 -module(gsms_0338).
 
 -export([decode/1, decode_char/1]).
--export([encode/1, encode/2, encode_char/1]).
+-export([encode/1, encode/2,  encode_char/1]).
+-export([encode_verify/1, encode_verify/2]).
 
 decode(Bin) when is_binary(Bin) ->
     decode(binary_to_list(Bin));
 decode(Cs) when is_list(Cs) ->
-    lists:flatten(decode_list(Cs)).
+    decode_list(Cs).
 
-%% 
+%%
 decode_list([16#1B,C|Cs]) ->
     case C of
 	16#0A -> [16#000C|decode_list(Cs)];  %%  FORM FEED
@@ -27,7 +28,7 @@ decode_list([16#1B,C|Cs]) ->
 	16#3D -> [16#007E|decode_list(Cs)];  %%  TILDE
 	16#3E -> [16#005D|decode_list(Cs)];  %%  RIGHT SQUARE BRACKET
 	16#40 -> [16#007C|decode_list(Cs)];  %%  VERTICAL LINE
-	16#65 -> [16#20AC|decode_list(Cs)];  %%  EURO SIGN    
+	16#65 -> [16#20AC|decode_list(Cs)];  %%  EURO SIGN
 	_ -> [16#A0|decode_list(Cs)]
     end;
 decode_list([C|Cs]) ->
@@ -179,8 +180,7 @@ decode_char(C) ->
 	16#7C -> 16#00F6; %%  LATIN SMALL LETTER O WITH DIAERESIS
 	16#7D -> 16#00F1; %%  LATIN SMALL LETTER N WITH TILDE
 	16#7E -> 16#00FC; %%  LATIN SMALL LETTER U WITH DIAERESIS
-	16#7F -> 16#00E0; %%  LATIN SMALL LETTER A WITH GRAVE
-    _ -> []
+	16#7F -> 16#00E0  %%  LATIN SMALL LETTER A WITH GRAVE
     end.
 
 encode(Data) ->
@@ -191,25 +191,34 @@ encode(Bin,Max) when is_binary(Bin), is_integer(Max) ->
 encode(Cs,Max) when is_list(Cs), is_integer(Max) ->
     encode_list(Cs,Max).
 
+encode_verify(Data) ->
+    encode_verify(Data, -1).
+
+encode_verify(Bin,Max) when is_binary(Bin), is_integer(Max) ->
+    encode_list_verify(binary_to_list(Bin), Max);
+encode_verify(Cs,Max) when is_list(Cs), is_integer(Max) ->
+    encode_list_verify(Cs,Max).
 
 encode_list(Cs,Max) ->
-    encode_list_(Cs,Max,[]).
+    {_Valid,Data,Rest} = encode_list_(Cs,Max,true,[]),
+    {Data,Rest}.
 
-encode_list_(Cs,0,Acc) ->
-    {iolist_to_binary(lists:reverse(Acc)),Cs};
-encode_list_(Cs1=[C|Cs],I,Acc) ->
-    try encode_char(C) of
+encode_list_verify(Cs,Max) ->
+    encode_list_(Cs,Max,true,[]).
+
+encode_list_(Cs,0,Valid,Acc) ->
+    {Valid,iolist_to_binary(lists:reverse(Acc)),Cs};
+encode_list_(Cs1=[C|Cs],I,Valid,Acc) ->
+    case encode_char(C) of
 	[Esc,Y] ->
-	    if I >= 2 -> encode_list_(Cs,I-2,[Y,Esc|Acc]);
-	       true -> {iolist_to_binary(lists:reverse(Acc)),Cs1}
+	    if I >= 2 -> encode_list_(Cs,I-2,Valid,[Y,Esc|Acc]);
+	       true -> {Valid,iolist_to_binary(lists:reverse(Acc)),Cs1}
 	    end;
-	Y -> encode_list_(Cs,I-1,[Y|Acc])
-    catch
-	error:_ ->
-	    encode_list_(Cs,I-2,[16#A0,16#1B|Acc])
+	[] -> encode_list_(Cs,I-2,false,[16#A0,16#1B|Acc]);
+	Y -> encode_list_(Cs,I-1,Valid,[Y|Acc])
     end;
-encode_list_([],_I,Acc) ->
-    {iolist_to_binary(lists:reverse(Acc)),[]}.
+encode_list_([],_I,Valid,Acc) ->
+    {Valid,iolist_to_binary(lists:reverse(Acc)),[]}.
 
 
 encode_char(C) ->
@@ -367,6 +376,6 @@ encode_char(C) ->
 	16#007E -> [16#1B,16#3D];  %%  TILDE
 	16#005D -> [16#1B,16#3E];  %%  RIGHT SQUARE BRACKET
 	16#007C -> [16#1B,16#40];  %%  VERTICAL LINE
-	16#20AC -> [16#1B,16#65];  %%  EURO SIGN    
-    _ -> []
+	16#20AC -> [16#1B,16#65];  %%  EURO SIGN
+	_ -> []
     end.
