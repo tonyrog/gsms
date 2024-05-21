@@ -137,7 +137,7 @@ options() ->
 %% NOT available on /dev/tty.HUAWEIMobile-Modem
 %%
 start_link(Opts) ->
-    lager:info("~p: start_link: args = ~p\n", [?MODULE, Opts]),
+    ?info("~p: start_link: args = ~p\n", [?MODULE, Opts]),
     gen_server:start_link(?MODULE, [self(),Opts], []).
 
 %%--------------------------------------------------------------------
@@ -230,7 +230,7 @@ send(Drv, Data) ->
 		  {stop, Reason::term()}.
 
 init([Caller,Opts]) ->
-    lager:info("~p: init: args = ~p,\n pid = ~p\n", 
+    ?info("~p: init: args = ~p,\n pid = ~p\n", 
 	       [?MODULE, Opts, self()]),
     Opts1 = normalise_opts(?UART_DEFAULT_OPTS ++ Opts),
     {Uopts0,Opts2} = split_opts(Opts1, uart:options()),
@@ -270,7 +270,7 @@ init([Caller,Opts]) ->
 %%--------------------------------------------------------------------
 
 handle_call({setopts, Opts},_From, Ctx=#ctx { uart = U}) ->
-    lager:debug("setopts ~p", [Opts]),
+    ?debug("setopts ~p", [Opts]),
     Opts1 = normalise_opts(Opts),
     {Uopts0,Opts2} = split_opts(Opts1, uart:options()),
     {Gopts0,Opts3} = split_opts(Opts2, options()),
@@ -297,7 +297,7 @@ handle_call({setopts, Opts},_From, Ctx=#ctx { uart = U}) ->
 			simulated ->
 			    {reply, ok, Ctx#ctx { uopts=Uopts1, opts=Gopts0} };
 			_ ->
-			    lager:debug("uart:setopts ~p", [Uopts1]),
+			    ?debug("uart:setopts ~p", [Uopts1]),
 			    case uart:setopts(U, Uopts1) of
 				ok ->
 				    {reply, ok, Ctx#ctx { uopts=Uopts1,
@@ -328,7 +328,7 @@ handle_call(stop, _From, Ctx) ->
 handle_call(Call,From,Ctx=#ctx {client = Client}) 
   when Client =/= undefined andalso Call =/= stop ->
     %% Driver is busy ..
-    lager:debug("handle_call: Driver busy, store call ~p", [Call]),
+    ?debug("handle_call: Driver busy, store call ~p", [Call]),
     %% set timer already here? probably!
     {Pid,_Tag} = From,
     Mon = erlang:monitor(process, Pid),
@@ -338,18 +338,18 @@ handle_call(Call,From,Ctx=#ctx {client = Client})
     {noreply, Ctx#ctx { queue = Q }, Timeout};
 
 handle_call({at,Command},From,Ctx) ->
-    lager:debug("handle_call: command ~p", [Command]),
+    ?debug("handle_call: command ~p", [Command]),
     case Ctx#ctx.uart of
 	simulated ->
-	    lager:info("simulated output ~p\n", [Command]),
+	    ?info("simulated output ~p\n", [Command]),
 	    {reply, ok, Ctx};
 	undefined ->
-	    lager:info("~p: No port defined yet.\n", [?MODULE]),
+	    ?info("~p: No port defined yet.\n", [?MODULE]),
 	    {reply, {error,no_port}, Ctx};
 	U ->
 	    case uart:send(U, ["AT",Command,"\r\n"]) of
 		ok ->
-		    lager:debug("command: sent"),
+		    ?debug("command: sent"),
 		    %% Wait for confirmation
 		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,5000),
 		    TRef = erlang:start_timer(Tm, self(), reply),
@@ -359,25 +359,25 @@ handle_call({at,Command},From,Ctx) ->
 				      reply = [],
 				      reply_timer = TRef}};
 		Other ->
-		    lager:debug("command: send failed, reason ~p", [Other]),
+		    ?debug("command: send failed, reason ~p", [Other]),
 		    {reply, Other, Ctx}
 	    end
     end;
 
 handle_call({atd,Command,Hex},From,Ctx) ->
-    lager:debug("handle_call: command ~p", [Command]),
+    ?debug("handle_call: command ~p", [Command]),
     case Ctx#ctx.uart of
 	simulated ->
-	    lager:info("simulated output ~p\n", [Command]),
+	    ?info("simulated output ~p\n", [Command]),
 	    {reply, ok, Ctx};
 	undefined ->
-	    lager:info("~p: No port defined yet.\n", [?MODULE]),
+	    ?info("~p: No port defined yet.\n", [?MODULE]),
 	    {reply, {error,no_port}, Ctx};
 	U ->
 	    uart:setopts(U, [{active,false}]),
 	    case uart:send(U, ["AT",Command,"\r\n"]) of
 		ok ->
-		    lager:debug("command: sent\n", []),
+		    ?debug("command: sent\n", []),
 		    %% wait for exacly ">\r\n"
 		    uart:setopts(U, [{active,once},{packet,{size,3}}]),
 		    %% Wait for confirmation
@@ -390,19 +390,19 @@ handle_call({atd,Command,Hex},From,Ctx) ->
 				      reply_timer = TRef}};
 		Other ->
 		    uart:setopts(U, [{active,true}]),
-		    lager:debug("command: send failed, reason ~p", [Other]),
+		    ?debug("command: send failed, reason ~p", [Other]),
 		    {reply, Other, Ctx}
 	    end
     end;
 
 handle_call({send,Data},_From,Ctx) ->
-    lager:debug("handle_call: send ~p", [Data]),
+    ?debug("handle_call: send ~p", [Data]),
     case Ctx#ctx.uart of
 	simulated ->
-	    lager:info("simulated output ~p\n", [Data]),
+	    ?info("simulated output ~p\n", [Data]),
 	    {reply, ok, Ctx};
 	undefined ->
-	    lager:info("~p: No port defined yet.\n", [?MODULE]),
+	    ?info("~p: No port defined yet.\n", [?MODULE]),
 	    {reply, {error,no_port}, Ctx};
 	U ->
 	    Reply = uart:send(U, Data),
@@ -426,14 +426,14 @@ handle_call(_Request, _From, Ctx) ->
 
 handle_cast(Cast, Ctx=#ctx {uart = U, client=Client})
   when U =/= undefined, Client =/= undefined ->
-    lager:debug("handle_cast: Driver busy, store cast ~p", [Cast]),
+    ?debug("handle_cast: Driver busy, store cast ~p", [Cast]),
     %% FIXME: add timer when/if we start using this
     QE = #qent { from=undefined, mon=undefined, command = {cast,Cast}},
     Q = Ctx#ctx.queue ++ [QE],
     {noreply, Ctx#ctx { queue = Q }};
 
 handle_cast(_Msg, Ctx) ->
-    lager:debug("handle_cast: Unknown message ~p", [_Msg]),
+    ?debug("handle_cast: Unknown message ~p", [_Msg]),
     {noreply, Ctx}.
 
 %%--------------------------------------------------------------------
@@ -457,17 +457,17 @@ handle_cast(_Msg, Ctx) ->
 
 handle_info({timeout,TRef,reply}, 
 	    Ctx=#ctx {client=Client, reply_timer=TRef}) ->
-    lager:debug("handle_info: timeout waiting for port", []),
+    ?debug("handle_info: timeout waiting for port", []),
     gen_server:reply(Client, {error, port_timeout}),
     Ctx1 = Ctx#ctx { reply_timer=undefined, reply=[], client = undefined},
     next_command(Ctx1);
 
 handle_info({uart,U,Data}, Ctx) when U =:= Ctx#ctx.uart, is_binary(Data) ->
-    lager:debug("handle_info: noreply ~p", [Data]),
+    ?debug("handle_info: noreply ~p", [Data]),
     send_event(Ctx#ctx.subs, {data,Data}),
     {noreply,Ctx};
 handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
-    lager:debug("got uart data: ~p\n", [Data]),
+    ?debug("got uart data: ~p\n", [Data]),
     case trim(Data) of
 	"" -> %% empty line (may add this later?)
 	    {noreply, Ctx};
@@ -475,13 +475,13 @@ handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
 	    uart:setopts(U, [{active,true},{packet,line}]),
 	    case uart:send(U, [Ctx#ctx.client_data,?CTRL_Z]) of
 		ok ->
-		    lager:debug("data sent ~p\n", [Ctx#ctx.client_data]),
+		    ?debug("data sent ~p\n", [Ctx#ctx.client_data]),
 		    stop_timer(Ctx#ctx.reply_timer),
 		    Tm=proplists:get_value(reply_timeout,Ctx#ctx.opts,10000),
 		    TRef = start_timer(Tm, reply),
 		    {noreply,Ctx#ctx { reply_timer=TRef }};
 		Error ->
-		    lager:debug("command: send failed, reason ~p", [Error]),
+		    ?debug("command: send failed, reason ~p", [Error]),
 		    reply(Error, Ctx)
             end;
 	"OK" ->
@@ -510,10 +510,10 @@ handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
 	    {noreply,Ctx1};
 	Reply ->
 	    if Ctx#ctx.client =/= undefined ->
-		    lager:debug("handle_info: data ~p", [Reply]),
+		    ?debug("handle_info: data ~p", [Reply]),
 		    {noreply,Ctx#ctx { reply=[Reply|Ctx#ctx.reply]}};
 	       true ->
-		    lager:debug("handle_info: noreply ~p", [Reply]),
+		    ?debug("handle_info: noreply ~p", [Reply]),
 		    send_event(Ctx#ctx.subs, {data,Data}),
 		    {noreply,Ctx}
 	    end
@@ -521,17 +521,17 @@ handle_info({uart,U,Data},  Ctx) when U =:= Ctx#ctx.uart ->
 
 handle_info({uart_error,U,Reason}, Ctx) when U =:= Ctx#ctx.uart ->
     if Reason =:= enxio ->
-	    lager:error("uart error ~p device ~s unplugged?", 
+	    ?error("uart error ~p device ~s unplugged?", 
 			[Reason,Ctx#ctx.device]);
        true ->
-	    lager:error("uart error ~p for device ~s", 
+	    ?error("uart error ~p for device ~s", 
 			[Reason,Ctx#ctx.device])
     end,
     {noreply, Ctx};
 
 handle_info({uart_closed,U}, Ctx) when U =:= Ctx#ctx.uart ->
     uart:close(U),
-    lager:error("uart close device ~s will retry", [Ctx#ctx.device]),
+    ?error("uart close device ~s will retry", [Ctx#ctx.device]),
     case open(Ctx#ctx { uart=undefined}) of
 	{ok, Ctx1} -> {noreply, Ctx1};
 	Error -> {stop, Error, Ctx}
@@ -544,7 +544,7 @@ handle_info({timeout,Ref,reopen}, Ctx) when Ctx#ctx.reopen_timer =:= Ref ->
     end;
 
 handle_info({'DOWN',Ref,process,_Pid,_Reason},Ctx) ->
-    lager:debug("handle_info: subscriber ~p terminated: ~p", 
+    ?debug("handle_info: subscriber ~p terminated: ~p", 
 	 [_Pid, _Reason]),
     case lists:keytake(Ref,#qent.mon, Ctx#ctx.queue) of
 	false -> remove_subscription(Ref,Ctx);
@@ -552,7 +552,7 @@ handle_info({'DOWN',Ref,process,_Pid,_Reason},Ctx) ->
 	    {noreply,Ctx#ctx { queue=Q}}
     end;
 handle_info(_Info, Ctx) ->
-    lager:debug("handle_info: Unknown info ~p", [_Info]),
+    ?debug("handle_info: Unknown info ~p", [_Info]),
     {noreply, Ctx}.
 
 %%--------------------------------------------------------------------
@@ -599,16 +599,16 @@ check_options(_Uopt,_Gopts,Opts) ->
 
 	    
 open(Ctx=#ctx {device = ""}) ->
-    lager:debug("open: simulated\n", []),
+    ?debug("open: simulated\n", []),
     {ok, Ctx#ctx { uart=simulated }};
 
 open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
     case uart:open(Name,UOpts) of
 	{ok,U} ->
-	    lager:debug("open: ~s [~w] [~w]: ~p",
+	    ?debug("open: ~s [~w] [~w]: ~p",
 			[Name,UOpts,uart:getopts(U,uart:options()),U]),
 	    flush_uart(U),
-	    lager:debug("sync start"),
+	    ?debug("sync start"),
 	    %% waky, waky ? do not echo
 	    uart:send(U, [?ESC|"AT\r\n"]),  %% escape if stuck in message send
 	    flush_uart(U, 1000, 0),
@@ -620,7 +620,7 @@ open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
 	    flush_uart(U, 100, 0),
 	    uart:send(U, "AT\r\n"),   %% empty
 	    flush_uart(U, 100, 0),
-	    lager:debug("sync stop"),
+	    ?debug("sync stop"),
 	    %% signal that the the uart device is up running
 	    Ctx#ctx.caller ! {gsms_uart, self(), up},
 	    {ok, Ctx#ctx { uart=U }};
@@ -628,23 +628,23 @@ open(Ctx=#ctx {device = Name, uopts=UOpts }) ->
 			E == enoent ->
 	    case proplists:get_value(reopen_timeout,Ctx#ctx.opts,infinity) of
 		infinity ->
-		    lager:debug("open: Driver not started, reason = ~p.\n",[E]),
+		    ?debug("open: Driver not started, reason = ~p.\n",[E]),
 		    {error, E};
 		Ival ->
-		    lager:debug("open: uart could not be opened, will try again"
+		    ?debug("open: uart could not be opened, will try again"
 				" in ~p millisecs.\n", [Ival]),
 		    Reopen_timer = start_timer(Ival, reopen),
 		    {ok, Ctx#ctx { reopen_timer = Reopen_timer }}
 	    end;
 	    
 	Error ->
-	    lager:debug("open: Driver not started, reason = ~p.\n", 
+	    ?debug("open: Driver not started, reason = ~p.\n", 
 		 [Error]),
 	    Error
     end.
 
 close(Ctx=#ctx {uart = U}) when is_port(U) ->
-    lager:debug("close: ~p", [U]),
+    ?debug("close: ~p", [U]),
     uart:close(U),
     {ok, Ctx#ctx { uart=undefined }};
 close(Ctx) ->
@@ -658,7 +658,7 @@ flush_uart(U) ->
 flush_uart(U,T0,T1) ->
     receive
 	{uart,U,_Data} ->
-	    lager:debug("flush: uart ~p\n", [_Data]),
+	    ?debug("flush: uart ~p\n", [_Data]),
 	    flush_uart(U,T1)
     after T0 ->
 	    ok
@@ -667,7 +667,7 @@ flush_uart(U,T0,T1) ->
 flush_uart(U,T) ->
     receive
 	{uart,U,_Data} ->
-	    lager:debug("flush: uart ~p\n", [_Data]),
+	    ?debug("flush: uart ~p\n", [_Data]),
 	    flush_uart(U,T)
     after T ->
 	    ok
@@ -764,7 +764,7 @@ event_notify(Name,String, Ctx) ->
 		[{"items", Items}]
 	end,
     Event = {Name,Args},
-    lager:debug("Event: ~p", [Event]),
+    ?debug("Event: ~p", [Event]),
     send_event(Ctx#ctx.subs, Event),
     Ctx.
 

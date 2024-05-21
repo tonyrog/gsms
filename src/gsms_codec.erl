@@ -229,8 +229,8 @@ set_pdu_opts([{Key,Value}|Kvs], R=#gsms_submit_pdu{}) ->
 	ref ->  %% fixme test?
 	    set_pdu_opts(Kvs, R);
 	_ ->
-	    lager:debug("set_pdu_opts: unknown pdu option ~p", 
-			[{Key,Value}]),
+	    ?debug("set_pdu_opts: unknown pdu option ~p", 
+		   [{Key,Value}]),
 	    {error, badarg}
     end;
 set_pdu_opts([], R) ->
@@ -392,7 +392,7 @@ decode_addr(T, Data) ->
 
 encode_addr(#gsms_addr { type=T, addr=A }) ->
     Addr = encode_addr_semi(T, A),
-    AddrLen = length(A),   %% number semi digits
+    AddrLen = get_addr_len(T, A),   %% number semi digits
     {encode_addr_type(T),Addr,AddrLen}.
 
 decode_addr_semi(international, SemiOctets) ->
@@ -405,6 +405,8 @@ encode_addr_semi(international, [$+|Ds]) ->
 encode_addr_semi(_, Ds) ->
     encode_semi_octets(Ds).
 
+get_addr_len(international, [$+|Ds]) -> length(Ds);
+get_addr_len(_, Ds) -> length(Ds).
      
 decode_bcd(<<H:4,L:4, T/binary>>) ->
     [H*10+L | decode_bcd(T)];
@@ -490,7 +492,7 @@ decode_dcs(V) ->
 				end
 			};
        true -> 
-	    lager:error("unknown dcs value ~p", [V]),
+	    ?error("unknown dcs value ~p", [V]),
 	    #gsms_dcs {}
     end.
 	    

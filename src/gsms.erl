@@ -22,7 +22,7 @@
 %%% @end
 
 -module(gsms).
--include("gsms.hrl").
+-include("../include/gsms.hrl").
 
 %% Interface
 -export([send/2, 
@@ -87,10 +87,10 @@ unsubscribe(Ref) ->
 
 %%%===================================================================
 start() ->
-    call([lager,uart,gsms], start).
+    call([uart,gsms], start).
 
 stop() ->
-    call([gsms,uart,lager], stop).
+    call([gsms,uart], stop).
 
 call([App|Apps], F) ->
     error_logger:info_msg("~p: ~p\n", [F,App]),

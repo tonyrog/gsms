@@ -101,8 +101,8 @@ join(BNumber,Attributes) ->
 %% Called from gsms_0705 backend to enter incoming message
 %%
 input_from(BNumber, Sms) ->
-    lager:debug("message input modem:~s, message = ~p\n",
-		[BNumber, Sms]),
+    ?debug("message input modem:~s, message = ~p\n",
+	   [BNumber, Sms]),
     ?SERVER ! {input_from, BNumber, Sms},
     ok.
 
@@ -273,7 +273,7 @@ handle_info({'DOWN',Ref,process,Pid,_Reason}, State) ->
     end;
 
 handle_info({input_from, BNumber, Pdu}, State) ->
-    lager:debug("input bnumber: ~p, pdu=~p\n", [BNumber,Pdu]),
+    ?debug("input bnumber: ~p, pdu=~p\n", [BNumber,Pdu]),
     lists:foreach(fun(S) -> match_filter(S, BNumber, Pdu) end, 
 		  State#state.subs),
     {noreply, State};
@@ -282,7 +282,7 @@ handle_info({timeout, Tmr, csq}, State) when State#state.csq_tmr =:= Tmr ->
 	lists:map(
 	  fun(I) ->
 		  R = gsms_0705:get_signal_strength(I#interface.pid),
-		  lager:debug("csq result: ~p\n", [R]),
+		  ?debug("csq result: ~p\n", [R]),
 		  case R of
 		      {ok,"+CSQ:"++Params} ->
 			  case erl_scan:string(Params) of
@@ -299,12 +299,12 @@ handle_info({timeout, Tmr, csq}, State) when State#state.csq_tmr =:= Tmr ->
 					  I
 				  end;
 			      _Error ->
-				  lager:error("unable to read rssi: ~p",
-					      [_Error]),
+				  ?error("unable to read rssi: ~p",
+					 [_Error]),
 				  I
 			  end;
 		      _Error ->
-			  lager:error("unable to read rssi: ~p",[_Error]),
+			  ?error("unable to read rssi: ~p",[_Error]),
 			  I
 		  end
 	  end, State#state.ifs),
@@ -370,14 +370,14 @@ match_filter(_S=#subscription {filter = Filter,
 			pid = Pid,
 			ref = Ref}, 
       BNumber, Pdu) ->
-    lager:debug("match filter: ~p", [Filter]),
+    ?debug("match filter: ~p", [Filter]),
     case match(Filter, BNumber, Pdu) of
 	true ->
-	    lager:debug("filter match success.", []),
-	    lager:debug("send to ~p", [Pid]),
+	    ?debug("filter match success.", []),
+	    ?debug("send to ~p", [Pid]),
 	    Pid ! {gsms, Ref, Pdu};
 	false ->
-	    lager:debug("filter match fail"),
+	    ?debug("filter match fail"),
 	    ok
     end.
 
@@ -457,7 +457,7 @@ match_addr(#gsms_addr { type=unknown, addr=Addr},
 match_addr(_, _) -> false.
 
 match_body(RegExp, UserData) ->
-    lager:debug("match regular expression: ~p", [RegExp]),
+    ?debug("match regular expression: ~p", [RegExp]),
     case re:run(UserData, RegExp, [{capture, none}]) of
 	match ->  true;
 	nomatch  -> false

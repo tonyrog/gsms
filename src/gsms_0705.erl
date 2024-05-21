@@ -78,6 +78,7 @@
 -export([drv_send_message/3]).
 
 -include("../include/gsms.hrl").
+-include("log.hrl").
 
 -type qkey_t()    :: {#gsms_addr{},MRef::integer}.
 -type isegment_t() :: {I::integer(),Ix::integer(),Pdu::#gsms_deliver_pdu{}}.
@@ -440,11 +441,11 @@ handle_info({gsms_event,Ref,Event}, State) when State#state.ref =:= Ref ->
 	    %% read a stored message
 	    case drv_read_message(State#state.drv, Ix) of
 		{ok, Sms} ->
-		    lager:debug("read_message: ~p", [Sms]),
+		    ?debug("read_message: ~p", [Sms]),
 		    State1 = handle_sms(Sms, Ix, State),
 		    {noreply, State1};
 		Error ->
-		    lager:info("read_message failed: ~p\n", [Error]),
+		    ?info("read_message failed: ~p\n", [Error]),
 		    {noreply, State}
 	    end;
 	{data,"+CREG:"++Params} ->
@@ -454,11 +455,11 @@ handle_info({gsms_event,Ref,Event}, State) when State#state.ref =:= Ref ->
 		    gsms_router:input_from(State#state.bnumber,{creg,Status}),
 		    {noreply, State};
 		_ ->
-		    lager:info("event ignored ~p\n", [Event]),
+		    ?info("event ignored ~p\n", [Event]),
 		    {noreply, State}
 	    end;
 	_ ->
-	    lager:info("event ignored ~p\n", [Event]),
+	    ?info("event ignored ~p\n", [Event]),
 	    {noreply, State}
     end;
 handle_info({gsms_uart, Pid, up}, State) when State#state.drv =:= Pid ->
@@ -482,7 +483,7 @@ handle_info({gsms_uart, Pid, up}, State) when State#state.drv =:= Pid ->
     ok = gsms_router:join(BNumber, State1#state.attributes),
     %% make sure we scan messages that arrived while we where gone,
     scan_input(self()),
-    lager:debug("running state = ~p", [State1]),
+    ?debug("running state = ~p", [State1]),
     {noreply, State1};
 
 handle_info({timeout,TRef,{cancel,Key}}, State) ->
@@ -490,10 +491,10 @@ handle_info({timeout,TRef,{cancel,Key}}, State) ->
     Q = State#state.inq,
     case lists:keytake(Key, 1, Q) of
 	false ->
-	    lager:warning("message from ~p not present in timeout", [Key]),
+	    ?warning("message from ~p not present in timeout", [Key]),
 	    {noreply, State};
 	{value,{_,TRef,_N,Segments},Q0} ->
-	    lager:warning("message from ~p dropped, timeout", [Key]),
+	    ?warning("message from ~p dropped, timeout", [Key]),
 	    lists:foreach(
 	      fun({_I,Ix,_}) ->
 		      drv_delete_message(State#state.drv, Ix)
@@ -514,7 +515,7 @@ handle_info(scan_input, State) ->
 	      end, expand_index_list(Ixs)),
 	    {noreply, State};
 	Reply ->
-	    lager:debug("list_indices reply ~p", [Reply]),
+	    ?debug("list_indices reply ~p", [Reply]),
 	    {noreply, State}
     end;
 handle_info(send, State) ->
@@ -528,8 +529,8 @@ handle_info(send, State) ->
 	    Reply =
 		gsms_uart:atd(State#state.drv,
 			      "+CMGS="++integer_to_list(Len),Hex),
-	    lager:debug("send status segment ~w of ~w response=~p\n", 
-			[I,N,Reply]),
+	    ?debug("send status segment ~w of ~w response=~p\n", 
+		   [I,N,Reply]),
 	    %% Fixme handle Reply=error!!! cancel rest of segments etc
 	    if I =:= N, Notify =:= true ->
 		    Sender ! {gsms_notify, SRef, ok};
@@ -544,8 +545,8 @@ handle_info(send, State) ->
 	    Len = (length(Hex)-2) div 2,
 	    Reply = gsms_uart:atd(State#state.drv,
 				  "+CMGW="++integer_to_list(Len),Hex),
-	    lager:debug("wrote status segment ~w of ~w response=~p\n", 
-			[I,N,Reply]),
+	    ?debug("wrote status segment ~w of ~w response=~p\n", 
+		   [I,N,Reply]),
 	    %% Fixme handle Reply=error!!! cancel rest of segments etc
 	    if I =:= N, Notify -> %% assume ok 
 		    Sender ! {gsms_notify, SRef, ok};
@@ -614,7 +615,7 @@ drv_init_csms_service(Drv) ->
 drv_check_csms_capability(Drv) ->
     case gsms_uart:at(Drv,"+CSMS=0") of
 	{ok, "+CSMS:"++Storage} ->
-	    lager:debug("sms_capability: +CSMS: ~s", [Storage]);
+	    ?debug("sms_capability: +CSMS: ~s", [Storage]);
 	Error ->
 	    Error
     end.
@@ -630,7 +631,7 @@ drv_set_msgboxes(_Drv, undefined) ->
     {ok, ""};
 drv_set_msgboxes(Drv, C) ->
     {ok, Resp} = gsms_uart:at(Drv,"+CPMS=?"),
-    lager:debug("sms_msgboxes: ~s", [Resp]),
+    ?debug("sms_msgboxes: ~s", [Resp]),
     Fmt = "+CPMS=~p,~p,~p",
     Msg = lists:flatten(io_lib:format(Fmt, [C, C, C])),
     gsms_uart:at(Drv, Msg).
@@ -879,7 +880,7 @@ next_concat_ref(Opts, State) ->
 	    CRef0 = if State#state.concat_seq ->
 			    State#state.concat_ref + 1;
 		       true ->
-			    random:unifrom(16#10000)-1
+			    rand:uniform(16#10000)-1
 		    end,
 	    CRef1 = if State#state.concat_8bit ->
 			    CRef0 band 16#ff;
@@ -932,12 +933,12 @@ handle_sms(Sms, Ix, State) ->
 				    State#state { inq=Q1 }
 			    end;
 			true ->
-			    lager:warning("segment ~w already received!", [I]),
+			    ?warning("segment ~w already received!", [I]),
 			    State
 		    end
 	    end;
 	Concat ->
-	    lager:warning("bad concat udh element ~p", [Concat]),
+	    ?warning("bad concat udh element ~p", [Concat]),
 	    State
     end.
 
